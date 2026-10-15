@@ -1,0 +1,111 @@
+{
+  "releaseVersion": "0.1.0",
+  "targetRepository": "aa2246740/agent-ready",
+  "rulesSha256": "ed71a19ab3288d32f70744c0cc965360513450da434ad56adda27d50f5628a22",
+  "rulesAndScoringUnchanged": true,
+  "onlyRuntimeChange": "Distribution version reset from 0.1.1 to 0.1.0; schema and rubric identifiers are unchanged",
+  "runtimeFiles": [
+    {
+      "path": "agent_readiness/__init__.py",
+      "sha256": "01a520d7eeebcc149031da233dbc6a37170e3229eef8aa2c0399cd7ae934d7e4",
+      "sameAsMaintainedVersion": false
+    },
+    {
+      "path": "agent_readiness/__main__.py",
+      "sha256": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d",
+      "sameAsMaintainedVersion": true
+    },
+    {
+      "path": "agent_readiness/application_scope.py",
+      "sha256": "cde0b94657836d68e4541fe374d17b118fd26326a6d833d340c799a10d35b488",
+      "sameAsMaintainedVersion": true
+    },
+    {
+      "path": "agent_readiness/catalog.py",
+      "sha256": "94b2119b2d9f138e4e21ee3efca57ef5eca9a3c9ba33ebcec38eb7c5a2942a84",
+      "sameAsMaintainedVersion": true
+    },
+    {
+      "path": "agent_readiness/cli.py",
+      "sha256": "5f896df9f5573009350148ddf2b4681ee23a48db56c13b50c998e81ea5310423",
+      "sameAsMaintainedVersion": true
+    },
+    {
+      "path": "agent_readiness/condition_evidence.py",
+      "sha256": "824e1aa6e7e4a1f1f043a14164f91ffd6c0956a823305c8574049242b78c11cb",
+      "sameAsMaintainedVersion": true
+    },
+    {
+      "path": "agent_readiness/data/rules.json",
+      "sha256": "ed71a19ab3288d32f70744c0cc965360513450da434ad56adda27d50f5628a22",
+      "sameAsMaintainedVersion": true
+    },
+    {
+      "path": "agent_readiness/prompts.py",
+      "sha256": "2e9f9737e2a9f3d739e54686123cfe950f4f3a0352eeafa880be038723738f6a",
+      "sameAsMaintainedVersion": true
+    },
+    {
+      "path": "agent_readiness/report.py",
+      "sha256": "55f80f9c955d19b5452996602e53f773e0572f6b2cfd78e1803172ec45908a59",
+      "sameAsMaintainedVersion": true
+    },
+    {
+      "path": "agent_readiness/repository.py",
+      "sha256": "7e91e9cd02545a3b18edd5c69089b820c8980ab6d876ab52d2fa0fedd0c3b040",
+      "sameAsMaintainedVersion": true
+    },
+    {
+      "path": "agent_readiness/runner_contract.py",
+      "sha256": "441f74f2d1c2c75f611209a24a77ed03f6df0ddcc352b565ef97d141e71d23df",
+      "sameAsMaintainedVersion": true
+    },
+    {
+      "path": "agent_readiness/scoring.py",
+      "sha256": "c890370a434d29e39770a555c42a6208e72ce96f79aab5807778b9feba3d19bb",
+      "sameAsMaintainedVersion": true
+    },
+    {
+      "path": "scripts/readiness.py",
+      "sha256": "c295cead335d6b0683a75a956ed32eb35271f6df27ef3d361bb69a8ebca12ed9",
+      "sameAsMaintainedVersion": true
+    },
+    {
+      "path": "skills/agent-readiness/SKILL.md",
+      "sha256": "396eb79eb9519eb39bfc98ef97376c9ac8ac711d06e4d63e61eee109851811d7",
+      "sameAsMaintainedVersion": true
+    },
+    {
+      "path": "skills/readiness-fix/SKILL.md",
+      "sha256": "8b24152edad3cdfcf0e6ad6188487e9d40430eebbfd4326c225e75f2373a7162",
+      "sameAsMaintainedVersion": true
+    },
+    {
+      "path": "skills/readiness-report/SKILL.md",
+      "sha256": "f2ffeeb109ebd6f85d148a874d13f11a28921cd7163c84ed7c97b0861036e640",
+      "sameAsMaintainedVersion": true
+    }
+  ],
+  "tests": {
+    "executed": 217,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 43.876,
+    "logSha256": "759e440a859cd81203a7b20b2a654be16c4e264f47e52717a8f242866fb691c4",
+    "includedModules": 16,
+    "excludedMaintenanceTests": 174,
+    "excludedTestsCountedAsPassing": false
+  },
+  "scope": "Local synthetic regression, real child-command evidence, report history, restricted submission, and isolated skill installation; not a new real-model assessment",
+  "newRealModelCalls": 0,
+  "distributionExcludes": [
+    "native JavaScript oracle functions",
+    "third-party CLI binaries",
+    "research tools and fixtures",
+    "original private reports, logs, target snapshots and credentials",
+    "old Git objects, branches and tags"
+  ],
+  "licenseReview": "Upstream rule text and adapted prompts remain. A new repository and version do not establish redistribution authorization. See NOTICE.md.",
+  "ciConfigured": false
+}
