@@ -103,6 +103,90 @@ def _quoted_source(item: dict, root: Path, quote: str) -> bool:
     return quote in "".join(excerpt)
 
 
+def _comment_mask(quote: str) -> list[bool]:
+    mask = [False] * len(quote)
+    # Multiline comments need a state spanning lines, including bare text
+    # between /* ... */ and HTML comment markers.
+    for match in re.finditer(r"/\*.*?(?:\*/|$)|<!--.*?(?:-->|$)", quote, re.S):
+        mask[match.start():match.end()] = [True] * (match.end() - match.start())
+    offset = 0
+    for line in quote.splitlines(keepends=True):
+        stripped = line.lstrip()
+        comment_at = None
+        if stripped.startswith(("#", "//", "/*", "<!--")) or (stripped.startswith("*") and not stripped.startswith("*/")):
+            comment_at = len(line) - len(stripped)
+        else:
+            marker = re.search(r"(?:^|\s)(?:#|//)|/\*|<!--", line)
+            if marker:
+                token = re.search(r"(#|//|/\*|<!--)", line[marker.start():])
+                comment_at = marker.start() + token.start()
+        if comment_at is not None:
+            for index in range(comment_at, len(line)):
+                mask[offset + index] = True
+        offset += len(line)
+    return mask
+
+
+def _strip_trailing_comment(line: str) -> str:
+    if line.lstrip().startswith(("#", "//", "/*", "*", "<!--")):
+        return ""
+    marker = re.search(r"\s(?:#|//).*$", line)
+    if marker:
+        return line[:marker.start()]
+    return line
+
+
+def _automatic_trigger_error(quote: str, registration: str) -> str | None:
+    manual = re.compile(
+        r"\b(?:manual|workflow_dispatch|disabled|planned|TODO)\b|--once\b|\benabled\s*[:=]\s*false\b",
+        re.I,
+    )
+    mask = _comment_mask(quote)
+    positions = []
+    start = 0
+    while True:
+        found = quote.find(registration, start)
+        if found < 0:
+            break
+        positions.append(found)
+        start = found + max(len(registration), 1)
+    if positions and all(all(mask[index:index + len(registration)]) for index in positions):
+        return "registration occurs only in a comment; cite an enabled automatic trigger"
+    if manual.search(registration):
+        cites_schedule = re.search(r"\bschedule\b", registration, re.I) is not None
+        other_manual = re.search(r"\b(?:manual|disabled|planned|TODO)\b|--once\b|\benabled\s*[:=]\s*false\b", registration, re.I)
+        line_has_both = any(
+            re.search(r"\bschedule\b", _strip_trailing_comment(line), re.I)
+            and re.search(r"\bworkflow_dispatch\b", _strip_trailing_comment(line), re.I)
+            for line in quote.splitlines()
+        )
+        if not (cites_schedule and line_has_both and not other_manual):
+            return "registration describes a manual, test-only, planned or disabled trigger; cite the enabled automatic registration"
+    for found in positions:
+        line_start = quote.rfind("\n", 0, found) + 1
+        # A short token such as "schedule" is judged with the indented block
+        # that follows it, so `enabled: false` on the next line still counts.
+        rest = quote[line_start:]
+        lines = rest.splitlines()
+        block = lines[:1]
+        for follower in lines[1:]:
+            if follower.strip() and not follower.startswith((" ", "\t")):
+                break
+            block.append(follower)
+        active = "\n".join(_strip_trailing_comment(line) for line in block)
+        if not active.strip():
+            continue
+        cites_schedule = re.search(r"\bschedule\b", registration, re.I) is not None
+        if cites_schedule and re.search(r"\bschedule\b", active, re.I) and re.search(r"\bworkflow_dispatch\b", active, re.I):
+            if not re.search(r"\benabled\s*[:=]\s*false\b|\bdisabled\b", active, re.I):
+                continue
+        if re.search(r"\benabled\s*[:=]\s*false\b|\bdisabled\b|\b(?:manual|planned|TODO)\b|--once\b", active, re.I):
+            return "registration describes a manual, test-only, planned or disabled trigger; cite the enabled automatic registration"
+        if re.search(r"\bworkflow_dispatch\b", active, re.I) and not cites_schedule:
+            return "registration describes a manual, test-only, planned or disabled trigger; cite the enabled automatic registration"
+    return None
+
+
 def condition_errors(data: dict, root: Path) -> list[dict]:
     """Collect all known condition errors, without writing or changing scores."""
     errors = []
@@ -173,6 +257,9 @@ def condition_errors(data: dict, root: Path) -> list[dict]:
                 if url.scheme not in {"https", "http"} or not url.netloc or url.username or url.password or not url.path.strip("/"):
                     error(condition, "requires a concrete PR URL, author and dependency; config alone is insufficient")
                     continue
+                if not re.search(r"/(?:pull|pulls|merge_requests|mr)/[1-9]\d*(?:/|$)", url.path, re.I):
+                    error(condition, "requires a pull or merge request URL; config alone is insufficient")
+                    continue
             if condition == "automatic_trigger" and facts["kind"] not in {"schedule", "event", "process", "service"}:
                 error(condition, "requires an enabled automatic trigger; manual/test-only delivery is insufficient")
                 continue
@@ -181,8 +268,9 @@ def condition_errors(data: dict, root: Path) -> list[dict]:
                 # Reject explicit contradictions, not guess arbitrary source
                 # semantics. A manual trigger may coexist with an automatic
                 # one: cite the latter registration separately in that case.
-                if re.search(r"\b(?:manual|workflow_dispatch|disabled|planned|TODO)\b|--once\b|\benabled\s*[:=]\s*false\b", registration, re.I):
-                    error(condition, "registration describes a manual, test-only, planned or disabled trigger; cite the enabled automatic registration")
+                trigger_error = _automatic_trigger_error(quote, registration)
+                if trigger_error:
+                    error(condition, trigger_error)
                     continue
             proven[condition].append(dict(facts, _application=application))
         for condition, facts in proven.items():

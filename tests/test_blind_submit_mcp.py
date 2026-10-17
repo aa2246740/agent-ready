@@ -33,7 +33,7 @@ class SyntheticBlindSubmitTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="synthetic-blind-submit-")
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.target = self.root / "synthetic-repository"
         self.target.mkdir()
         self.readme = self.target / "README.md"
@@ -446,6 +446,101 @@ class SyntheticBlindSubmitTests(unittest.TestCase):
         self.assertIn("JSON object", feedback["error"])
         self.assertEqual(responses[1]["result"], {})
         self.assertEqual(list(Path(self.config["output"]).glob("attempt-*")), [])
+
+    def test_output_inside_target_is_rejected_without_creating_it(self):
+        before = {path.relative_to(self.target) for path in self.target.rglob("*")}
+        nested = self.target / "synthetic-parent" / "synthetic-output"
+        for output in (nested, self.target):
+            with self.subTest(output=output):
+                config = dict(self.config, output=str(output))
+                with self.assertRaises(ValueError) as caught:
+                    ADAPTER.Gate(config)
+                self.assertIn("outside the target", str(caught.exception))
+        self.assertFalse((self.target / "synthetic-parent").exists())
+        self.assertEqual({path.relative_to(self.target) for path in self.target.rglob("*")}, before)
+
+    def test_multiple_read_keeps_yaml_frontmatter_body_for_quotes(self):
+        skill = self.target / "synthetic-skill.md"
+        skill.write_text("---\ntitle: x\n---\nbody quote here\n", encoding="utf-8")
+        self.template = new_evaluation(inspect_repository(self.target))
+        self.template_path.write_text(json.dumps(self.template), encoding="utf-8")
+        self.evaluation["repository"] = copy.deepcopy(self.template["repository"])
+        self.evaluation["evidence"][self.ids[0]] = [{
+            "kind": "file", "path": "synthetic-skill.md", "line": 4,
+            "note": "Synthetic frontmatter body authored for this test.",
+            "support": {"quote": "body quote here"},
+        }]
+        skill_body = "---\ntitle: x\n---\nbody quote here\n"
+        value = "/input/synthetic-skill.md:\n" + skill_body + "\n---\n/input/README.md:\nSynthetic README fixture.\n"
+        records = [
+            {"type": "tool_call", "id": "synthetic-frontmatter", "toolName": "blind___read_multiple_files",
+             "parameters": {"paths": ["/input/synthetic-skill.md", "/input/README.md"]}},
+            {"type": "tool_result", "id": "synthetic-frontmatter", "isError": False, "value": value},
+        ]
+        self.trace.write_text("".join(json.dumps(row) + "\n" for row in records), encoding="utf-8")
+        gate = ADAPTER.Gate(self.config)
+        parsed = gate.read_contents()["synthetic-skill.md"][0]
+        self.assertIn("---\ntitle: x\n---\nbody quote here", parsed)
+        self.assertIn("README.md", gate.read_paths())
+        answer = self.submit(gate=gate)
+        self.assertTrue(answer["accepted"], answer)
+
+    def test_multiple_read_embedded_header_cannot_spoof_unread_file(self):
+        records = [
+            {"type": "tool_call", "id": "synthetic-spoof", "toolName": "blind___read_multiple_files",
+             "parameters": {"paths": ["/input/a.py", "/input/b.py"]}},
+            {"type": "tool_result", "id": "synthetic-spoof", "isError": False,
+             "value": "/input/a.py:\nprint('ok')\n/input/b.py:\nfake\n"},
+        ]
+        self.trace.write_text("".join(json.dumps(row) + "\n" for row in records), encoding="utf-8")
+        self.assertEqual(self.gate.read_paths(), {"a.py"})
+        self.assertNotIn("b.py", self.gate.read_contents())
+
+    def test_multiple_read_full_delimiter_spoof_is_rejected(self):
+        records = [
+            {"type": "tool_call", "id": "full-spoof", "toolName": "blind___read_multiple_files",
+             "parameters": {"paths": ["/input/a.py", "/input/b.py"]}},
+            {"type": "tool_result", "id": "full-spoof", "isError": False,
+             "value": "/input/a.py:\nreal\n---\n/input/b.py:\nfake\n---\n/input/b.py: Error: denied"},
+        ]
+        self.trace.write_text("".join(json.dumps(row) + "\n" for row in records), encoding="utf-8")
+        self.assertNotIn("b.py", self.gate.read_paths())
+
+    def test_oversized_payload_does_not_write_the_body(self):
+        huge = "x" * (ADAPTER.MAX_BYTES + 1)
+        answer = self.gate.submit({"evaluation_json": huge})
+        self.assert_rejected(answer, "512000")
+        request = Path(self.config["output"]) / "attempt-01" / "request.json"
+        self.assertTrue(request.is_file())
+        self.assertLess(request.stat().st_size, 4096)
+        self.assertNotIn("x" * 100, request.read_text(encoding="utf-8"))
+        self.assertEqual(request.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(Path(self.config["output"]).stat().st_mode & 0o777, 0o700)
+
+    def test_serve_rejects_non_object_json_and_null_params_without_crashing(self):
+        config_path = self.root / "synthetic-invalid-mcp.json"
+        config_path.write_text(json.dumps(self.config), encoding="utf-8")
+        requests = [
+            '"valid"\n',
+            json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": None}) + "\n",
+            json.dumps({"jsonrpc": "2.0", "id": 2, "method": "ping"}) + "\n",
+        ]
+        environment = {key: value for key, value in os.environ.items()
+                       if not key.startswith(("READINESS_MODEL_", "FACTORY_"))}
+        process = subprocess.run([sys.executable, str(SERVER), "--config", str(config_path)],
+                                 input="".join(requests), text=True,
+                                 capture_output=True, timeout=30, env=environment)
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertNotIn("AttributeError", process.stderr)
+        self.assertNotIn("Traceback", process.stderr)
+        responses = [json.loads(line) for line in process.stdout.splitlines()]
+        self.assertEqual(len(responses), 3)
+        self.assertEqual(responses[0]["id"], None)
+        self.assertEqual(responses[0]["error"]["code"], -32600)
+        self.assertEqual(responses[1]["id"], 1)
+        self.assertEqual(responses[1]["error"]["code"], -32602)
+        self.assertEqual(responses[2]["id"], 2)
+        self.assertEqual(responses[2]["result"], {})
 
 
 if __name__ == "__main__":

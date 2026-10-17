@@ -8,7 +8,10 @@ import subprocess
 import unittest
 
 from agent_readiness.report import ReportError, _runner_context, _test_evidence
-import test_empty_command_output as fixture
+try:
+    from tests import test_empty_command_output as fixture
+except ImportError:
+    import test_empty_command_output as fixture
 
 
 class SubdirectoryCdTests(unittest.TestCase):
@@ -18,6 +21,9 @@ class SubdirectoryCdTests(unittest.TestCase):
     def apps(self):
         for name in ("server", "web"):
             (self.root / "apps" / name).mkdir(parents=True, exist_ok=True)
+            tests = self.root / "apps" / name / "tests"
+            tests.mkdir(exist_ok=True)
+            (tests / "test_one.py").write_text("def test_one(): pass\n", encoding="utf-8")
         return {"apps/server": {"description": "Synthetic server app"},
                 "apps/web": {"description": "Synthetic web app"}}
 

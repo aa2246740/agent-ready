@@ -52,10 +52,21 @@ def _manifest_name(root, app):
     try:
         if not manifest.resolve(strict=True).is_relative_to(root):
             return None
-        value = json.loads(manifest.read_text())
+        value = json.loads(manifest.read_text(encoding="utf-8"))
     except (OSError, ValueError, RuntimeError):
         return None
     return value.get('name') if isinstance(value, dict) else None
+
+
+_DIRECTORY_OPTIONS = {'--prefix', '--cwd', '--dir', '--directory', '-C'}
+
+
+def _explicit_directory_option(words):
+    args = words[1:]
+    if '--' in args:
+        args = args[:args.index('--')]
+    return any(token.partition('=')[0] in _DIRECTORY_OPTIONS
+               or (token.startswith('-C') and token != '-C') for token in args)
 
 
 def _selected_apps(words, cwd, apps, root, check_paths):
@@ -78,12 +89,14 @@ def _selected_apps(words, cwd, apps, root, check_paths):
     while i < len(args):
         token = args[i]
         key, equal, value = token.partition('=')
-        if key in {'--prefix', '--cwd', '--dir', '--directory', '-C'}:
+        if key in _DIRECTORY_OPTIONS:
             if not equal:
                 i += 1
                 if i == len(args): return True, set()
                 value = args[i]
             paths.append(value)
+        elif token.startswith('-C') and token != '-C':
+            paths.append(token[2:])
         elif key in {'--workspace', '-w'} or (executable == 'yarn' and token == 'workspace'):
             if not equal:
                 i += 1
@@ -112,6 +125,9 @@ def _selected_apps(words, cwd, apps, root, check_paths):
         if root is None and selected.is_absolute(): return 'directory', set()
         base = root if root is not None else Path('.')
         selected = selected if selected.is_absolute() else base / cwd / selected
+        if check_paths:
+            selected = selected.resolve()
+            base = base.resolve()
         try: relative = selected.relative_to(base)
         except ValueError: return True, set()
         app = _app_for(relative, apps)
@@ -137,10 +153,14 @@ def _selected_apps(words, cwd, apps, root, check_paths):
 def javascript_application_supported(app, words, runner_cwd, apps, root, output, *, check_paths=True):
     # One explicit root application contains the whole repository. A lone
     # non-root app must still not claim another directory's collection.
-    if set(apps) == {'.'}:
-        return app == '.'
+    # An explicit --prefix/--cwd/--dir/-C is resolved before that shortcut:
+    # `npm --prefix ../other` must not inherit the single-app allowance.
     root = Path(root) if root is not None else None
+    if set(apps) == {'.'} and not _explicit_directory_option(words):
+        return app == '.'
     kind, selected = _selected_apps(words, runner_cwd, apps, root, check_paths)
+    if set(apps) == {'.'}:
+        return app == '.' and bool(selected) and app in selected
     if kind and selected is not None and app not in selected:
         return False
     cwd_app = _app_for(runner_cwd, apps)

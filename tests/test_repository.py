@@ -3,6 +3,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from agent_readiness.repository import (
     RepositoryError,
@@ -17,7 +18,7 @@ class RepositoryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.base = Path(self.temp.name)
+        self.base = Path(self.temp.name).resolve()
         self.root = self.base / "repo"
         self.root.mkdir()
         self.git("init", "-b", "main")
@@ -136,6 +137,17 @@ class RepositoryTests(unittest.TestCase):
         (nested / "file").write_text("second change", encoding="utf-8")
         self.assertNotEqual(fingerprint, self.inspect()["fingerprint"])
 
+    def test_parent_inspection_disables_submodule_filters(self):
+        self.test_gitlink_contents_are_included()
+        nested = self.root / "nested"
+        (nested / ".gitattributes").write_text("file filter=child\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(nested), "config", "filter.child.clean",
+                        "sh -c 'touch FILTER_RAN; cat'"], check=True, capture_output=True)
+        original = (nested / "file").read_bytes()
+        (nested / "file").write_bytes(b"X" * len(original))
+        self.inspect()
+        self.assertFalse((nested / "FILTER_RAN").exists())
+
     def test_fsmonitor_hook_is_never_executed(self):
         marker = self.base / "hook-executed"
         hook = self.base / "fsmonitor-hook"
@@ -146,15 +158,113 @@ class RepositoryTests(unittest.TestCase):
         self.assertFalse(marker.exists())
 
     def test_secret_remote_values_never_enter_result(self):
-        self.git("remote", "add", "origin", "https://user:topsecret@GitHub.com/Owner/Repo.git?token=hidden#private")
+        self.git("remote", "add", "origin", "https://myuser:topsecret_token@GitHub.com/Owner/Repo.git?token=hidden_pass#private_key")
         result = self.inspect()
         self.assertEqual(result["origin"], "https://github.com/Owner/Repo")
         self.assertEqual(result["identity"], result["origin"])
-        for secret in ("user", "topsecret", "hidden", "private"):
-            self.assertNotIn(secret, repr(result))
+        for secret in ("myuser", "topsecret_token", "hidden_pass", "private_key"):
+            self.assertNotIn(secret, result["origin"])
+            self.assertNotIn(secret, result["identity"])
         self.git("remote", "set-url", "origin", "git@github.com:Owner/Repo.git")
         self.assertEqual(result["identity"], self.inspect()["identity"])
         self.assertEqual(result["fingerprint"], self.inspect()["fingerprint"])
+
+    def test_clean_filter_is_not_executed_during_inspect(self):
+        marker = self.root / "PWNED"
+        self.git("config", "filter.evil.clean", "sh -c 'touch PWNED; cat'")
+        (self.root / ".gitattributes").write_text("*.md filter=evil\n", encoding="utf-8")
+        (self.root / "README.md").write_text("# Changed\n", encoding="utf-8")
+        result = self.inspect()
+        self.assertFalse(marker.exists())
+        self.assertTrue(result["dirty"])
+
+    def test_all_filter_names_and_process_commands_are_disabled(self):
+        for name in ("evil/slash", "evil+plus"):
+            for kind in ("clean", "process"):
+                with self.subTest(name=name, kind=kind):
+                    attributes = self.root / ".gitattributes"
+                    attributes.write_text(f"*.md filter={name}\n", encoding="utf-8")
+                    self.git("add", ".gitattributes")
+                    self.git("config", f"filter.{name}.{kind}", "sh -c 'touch FILTER_RAN; cat'")
+                    self.git("config", f"filter.{name}.required", "true")
+                    # Equal-size replacement forces Git to consider filtering,
+                    # unlike a stat-only size mismatch that bypasses the filter.
+                    content = (self.root / "README.md").read_bytes()
+                    (self.root / "README.md").write_bytes(b"X" * len(content))
+                    self.inspect()
+                    self.assertFalse((self.root / "FILTER_RAN").exists())
+                    self.git("config", "--remove-section", f"filter.{name}")
+
+    def test_scp_userinfo_with_token_is_stripped(self):
+        canonical = canonicalize_origin("user:token@github.com:org/repo.git")
+        self.assertEqual(canonical, "https://github.com/org/repo")
+        self.assertNotIn("token", canonical)
+        self.assertNotIn("user:", canonical)
+
+    def test_relative_local_origin_resolves_against_root(self):
+        left = self.base / "a" / "repo"
+        right = self.base / "b" / "repo"
+        left.mkdir(parents=True)
+        right.mkdir(parents=True)
+        resolved_here = str((left / "../shared").resolve())
+        resolved_there = str((right / "../shared").resolve())
+        self.assertEqual(canonicalize_origin("../shared.git", left), resolved_here)
+        self.assertEqual(canonicalize_origin("../shared.git", right), resolved_there)
+        self.assertNotEqual(resolved_here, resolved_there)
+        self.assertEqual(canonicalize_origin("../shared.git"), "../shared")
+        self.assertEqual(canonicalize_origin("../shared.git", self.root), str((self.root / "../shared").resolve()))
+
+        resolved_root = str((self.root / "../shared").resolve())
+        self.git("remote", "add", "origin", "../shared.git?token=hidden_pass#frag")
+        first = self.inspect()
+        self.assertEqual(first["origin"], resolved_root)
+        self.assertEqual(first["identity"], f"{resolved_root}@{self.root}")
+        self.assertNotIn("hidden_pass", first["origin"])
+        self.assertNotIn("hidden_pass", first["identity"])
+
+        other = self.base / "other-repo"
+        other.mkdir()
+        shared = self.base / "shared.git"
+        subprocess.run(["git", "-C", str(other), "init", "-b", "main"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ["git", "-C", str(other), "remote", "add", "origin", str(shared)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.git("remote", "set-url", "origin", str(shared))
+        this_checkout = self.inspect()
+        other_checkout = inspect_repository(other)
+        self.assertEqual(this_checkout["origin"], other_checkout["origin"])
+        self.assertNotEqual(this_checkout["identity"], other_checkout["identity"])
+        self.assertEqual(this_checkout["identity"], f"{this_checkout['origin']}@{this_checkout['root']}")
+        self.assertEqual(other_checkout["identity"], f"{other_checkout['origin']}@{other_checkout['root']}")
+
+    def test_file_origin_identity_includes_checkout(self):
+        self.git("remote", "add", "origin", "file://" + str(self.base / "shared.git"))
+        result = self.inspect()
+        self.assertTrue(result["origin"].startswith("file:"))
+        self.assertEqual(result["identity"], f"{result['origin']}@{result['root']}")
+        self.assertNotIn("shared.git", result["origin"])
+
+    def test_file_evidence_lists_the_snapshot_once(self):
+        evidence = []
+        for index in range(8):
+            name = f"notes-{index}.txt"
+            (self.root / name).write_text(f"{index}\n", encoding="utf-8")
+            evidence.append(self.file_evidence(name, line=1))
+        calls = []
+        real_run = subprocess.run
+
+        def spy(command, *args, **kwargs):
+            calls.append(list(command))
+            return real_run(command, *args, **kwargs)
+
+        with patch("agent_readiness.repository.subprocess.run", spy):
+            validate_evidence(self.root, evidence)
+        listings = [command for command in calls if "ls-files" in command]
+        self.assertEqual(len(listings), 1)
+        self.assertLessEqual(len(calls), 2)
 
     def test_remote_url_normalization(self):
         expected = "https://github.com/owner/repo"

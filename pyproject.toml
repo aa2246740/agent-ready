@@ -9,6 +9,7 @@ description = "Evidence-backed local repository assessment, reporting and remedi
 requires-python = ">=3.10"
 dependencies = []
 license-files = ["LICENSE", "LICENSE-SCOPE.md", "NOTICE.md"]
+readme = "README.md"
 
 [project.optional-dependencies]
 test = ["pytest==8.4.2"]
@@ -16,8 +17,26 @@ test = ["pytest==8.4.2"]
 [project.scripts]
 agent-readiness = "agent_readiness.cli:main"
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.packages.find]
 include = ["agent_readiness*"]
 
 [tool.setuptools.package-data]
 agent_readiness = ["data/*.json"]
+
+# Source files that are not inside the import package. setuptools records these
+# in the sdist; there is no MANIFEST.in in this repository.
+[tool.setuptools.data-files]
+tools = ["tools/*.py"]
+scripts = ["scripts/*.py"]
+docs = ["docs/*.md"]
+"skills/agent-readiness" = ["skills/agent-readiness/*.md"]
+"skills/readiness-report" = ["skills/readiness-report/*.md"]
+"skills/readiness-fix" = ["skills/readiness-fix/*.md"]
+evidence = ["evidence/*.json"]
+"share/agent-readiness" = ["requirements-dev.txt", "AGENTS.md"]
+
+[tool.pytest.ini_options]
+pythonpath = [".", "tests"]

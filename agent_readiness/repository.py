@@ -22,17 +22,53 @@ class RepositoryError(ValueError):
     """The repository or a supplied evidence/output path is invalid."""
 
 
-def _git(root: Path, *args: str, optional: bool = False) -> bytes | None:
+# filter.<name>.clean and filter.<name>.process are executable commands.
+_FILTER_COMMAND = re.compile(r"filter\..+\.(?:clean|process)\Z")
+
+
+def _disabled_filter_args(root: Path) -> list[str]:
+    """Blank configured clean/process filters so read-only Git cannot run them."""
+    output = _git(root, "config", "--null", "--name-only", "--get-regexp", r"^filter\..*\.(clean|process)$", optional=True)
+    args: list[str] = []
+    output = output or b""
+
+    seen: set[str] = set()
+    for raw in output.split(b"\0"):
+        key = os.fsdecode(raw)
+        if not key:
+            continue
+        if key in seen or _FILTER_COMMAND.fullmatch(key) is None:
+            continue
+        seen.add(key)
+        if "=" in key:
+            raise RepositoryError("Cannot safely disable a Git filter whose name contains '='")
+        args.extend(("-c", f"{key}=", "-c", f"{key.rsplit('.', 1)[0]}.required=false"))
+    # Parent `git status` launches Git in submodules, inheriting -c overrides.
+    # Include their filter names too before that first recursive status.
+    listed = _git(root, "ls-files", "--stage", "-z")
+    for entry in listed.split(b"\0"):
+        if not entry.startswith(b"160000 ") or b"\t" not in entry:
+            continue
+        child = root / os.fsdecode(entry.split(b"\t", 1)[1])
+        if child.is_dir() and not child.is_symlink() and child.resolve().is_relative_to(root.resolve()):
+            args.extend(_disabled_filter_args(child))
+    return args
+
+
+def _git(root: Path, *args: str, optional: bool = False, disable_filters: bool = False) -> bytes | None:
     env = os.environ.copy()
     env["GIT_OPTIONAL_LOCKS"] = "0"
     # Caller-level Git overrides must not redirect a snapshot into another repo.
     for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"):
         env.pop(key, None)
+    config = ["-c", "core.fsmonitor=false"]
+    if disable_filters:
+        config.extend(_disabled_filter_args(root))
     try:
         result = subprocess.run(
             # A configured fsmonitor hook is executable code; inspection must
             # not run it or rely on an untrusted cached filesystem observation.
-            ["git", "-c", "core.fsmonitor=false", "-C", str(root), *args],
+            ["git", *config, "-C", str(root), *args],
             env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -63,24 +99,51 @@ def _root(path: str | os.PathLike[str]) -> Path:
         raise RepositoryError("Unable to resolve Git repository root") from exc
 
 
-def canonicalize_origin(origin: str) -> str:
-    """Remove credentials and normalize common HTTPS, SSH and SCP Git URLs.
+def _canonicalize_local_path(value: str, root: Path | None) -> str:
+    """Resolve a filesystem remote against its checkout and drop decorations."""
+    value = value.split("?", 1)[0].split("#", 1)[0]
+    candidate = Path(value)
+    if root is not None and not candidate.is_absolute():
+        candidate = root / candidate
+    if candidate.is_absolute():
+        value = str(candidate.resolve())
+    value = value.rstrip("/")
+    return value[:-4] if value.endswith(".git") else value
+
+
+def _repository_identity(origin: str | None, root: Path) -> str:
+    """Network remotes stay canonical; local paths stay tied to this checkout.
+
+    Two checkouts can both name ``../shared.git`` or the same absolute path.
+    Resolving the path is not enough when that upstream is shared, so a local
+    or ``file:`` origin keeps the checkout root in the identity.
+    """
+    if not origin:
+        return f"local:{root}"
+    if "://" in origin and not origin.startswith("file:"):
+        return origin
+    return f"{origin}@{root}"
+
+
+def canonicalize_origin(origin: str, root: Path | None = None) -> str:
+    """Remove credentials and normalize common HTTPS, SSH, SCP and local Git URLs.
 
     The transport does not define repository identity: ordinary HTTPS and SSH
     URLs for the same host/path share the canonical HTTPS representation.
+    A relative local path is resolved against ``root`` when that checkout is
+    known, so ``../shared.git`` in two repositories does not collapse.
     """
     value = origin.strip()
     if not value or "\x00" in value or "\n" in value or "\r" in value:
         raise RepositoryError("Invalid Git remote URL")
     if "://" not in value:
-        scp = re.fullmatch(r"(?:[^/@:]+@)?([^/:]+):(.+)", value)
+        # user:token@host:path is still SCP. The userinfo may itself contain
+        # a colon, so it cannot be excluded from the optional prefix.
+        scp = re.fullmatch(r"(?:[^/@]+@)?([^/:]+):(.+)", value)
         if scp:
             value = f"ssh://{scp.group(1)}/{scp.group(2).lstrip('/')}"
         else:
-            # Local remotes can have query-like text; remove it conservatively
-            # rather than ever persisting an embedded credential parameter.
-            value = value.split("?", 1)[0].split("#", 1)[0].rstrip("/")
-            return value[:-4] if value.endswith(".git") else value
+            return _canonicalize_local_path(value, root)
     try:
         parsed = urlsplit(value)
         host = parsed.hostname
@@ -144,18 +207,54 @@ def _nonempty(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
-def _ensure_snapshot_member(root: Path, path: Path) -> None:
-    """Require a file/link or nested repository to be covered by the snapshot."""
-    owner = _root(path.parent)
+def _snapshot_owner(root: Path, path: Path, owners: dict[Path, Path]) -> Path:
+    """Find the worktree that contains path, without a rev-parse per file."""
+    current = path.parent
+    stacked: list[Path] = []
+    while True:
+        cached = owners.get(current)
+        if cached is not None:
+            owner = cached
+            break
+        stacked.append(current)
+        if current == root:
+            owner = root
+            break
+        if root not in current.parents:
+            owner = _root(current)
+            break
+        if (current / ".git").exists():
+            owner = _root(current)
+            break
+        current = current.parent
     if not _inside(root, owner):
         raise RepositoryError("File evidence must belong to the evaluated repository")
+    for directory in stacked:
+        owners[directory] = owner
+    return owner
+
+
+def _snapshot_entries(owner: Path, cache: dict[Path, set[bytes]]) -> set[bytes]:
+    """List tracked and non-ignored untracked paths once per worktree."""
+    entries = cache.get(owner)
+    if entries is None:
+        listed = _git(owner, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+        entries = {entry for entry in listed.split(b"\x00") if entry}
+        cache[owner] = entries
+    return entries
+
+
+def _ensure_snapshot_member(
+    root: Path, path: Path, owners: dict[Path, Path], cache: dict[Path, set[bytes]]
+) -> None:
+    """Require a file/link or nested repository to be covered by the snapshot."""
+    owner = _snapshot_owner(root, path, owners)
     if owner != root:
         # A nested repository can itself be ignored by its containing worktree.
-        _ensure_snapshot_member(root, owner)
+        _ensure_snapshot_member(root, owner, owners, cache)
     relative = path.relative_to(owner).as_posix()
-    listed = _git(owner, "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", f":(literal){relative}")
-    entries = set(listed.split(b"\x00"))
     raw = os.fsencode(relative)
+    entries = _snapshot_entries(owner, cache)
     if raw not in entries and raw + b"/" not in entries:
         raise RepositoryError(
             "File evidence must be tracked or non-ignored so its contents are covered by the snapshot; "
@@ -163,7 +262,9 @@ def _ensure_snapshot_member(root: Path, path: Path) -> None:
         )
 
 
-def _ensure_evidence_snapshotted(root: Path, value: str) -> Path:
+def _ensure_evidence_snapshotted(
+    root: Path, value: str, owners: dict[Path, Path], cache: dict[Path, set[bytes]]
+) -> Path:
     # Cover every symlink in the reference as well as the final file. Otherwise
     # an ignored link could redirect a citation without changing the snapshot.
     pending = deque(PurePosixPath(value).parts)
@@ -182,7 +283,7 @@ def _ensure_evidence_snapshotted(root: Path, value: str) -> Path:
                 raise RepositoryError("Evidence symlink traverses outside the working tree")
             if not current.is_symlink():
                 continue
-            _ensure_snapshot_member(root, current)
+            _ensure_snapshot_member(root, current, owners, cache)
             links_followed += 1
             if links_followed > 40:
                 raise RepositoryError("Evidence symlink cannot be safely resolved")
@@ -196,7 +297,7 @@ def _ensure_evidence_snapshotted(root: Path, value: str) -> Path:
             pending.extendleft(reversed(target.parts))
     except OSError as exc:
         raise RepositoryError("Unable to inspect file evidence safely") from exc
-    _ensure_snapshot_member(root, current)
+    _ensure_snapshot_member(root, current, owners, cache)
     return current
 
 
@@ -225,6 +326,8 @@ def _validate_line(path: Path, requested_line: int) -> None:
 def validate_evidence(root: str | os.PathLike[str], evidence: object) -> None:
     """Validate one evidence object (or a list) without executing commands."""
     repository_root = _root(root)
+    owners: dict[Path, Path] = {repository_root: repository_root}
+    cache: dict[Path, set[bytes]] = {}
     items = evidence if isinstance(evidence, list) else [evidence]
     for item in items:
         if not isinstance(item, Mapping):
@@ -235,7 +338,7 @@ def validate_evidence(root: str | os.PathLike[str], evidence: object) -> None:
                 raise RepositoryError("File evidence requires a nonempty note")
             if "line" in item and (type(item["line"]) is not int or item["line"] < 1):
                 raise RepositoryError("File evidence line must be a positive integer")
-            if _ensure_evidence_snapshotted(repository_root, item["path"]) != path:
+            if _ensure_evidence_snapshotted(repository_root, item["path"], owners, cache) != path:
                 raise RepositoryError("File evidence changed during validation")
             if "line" in item:
                 _validate_line(path, item["line"])
@@ -272,7 +375,15 @@ def _frame(digest, tag: bytes, content: bytes) -> None:
 
 
 def _status(root: Path) -> bytes:
-    return _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none")
+    return _git(
+        root,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--ignore-submodules=none",
+        disable_filters=True,
+    )
 
 
 def _head(root: Path) -> str | None:
@@ -285,7 +396,15 @@ def _snapshot(root: Path, head: str | None, status_before: bytes) -> str:
     _frame(digest, b"version", b"agent-readiness-working-tree-v1")
     _frame(digest, b"head", (head or "").encode("ascii"))
     _frame(digest, b"status", status_before)
-    listed = _git(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+    listed = _git(
+        root,
+        "ls-files",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "-z",
+        disable_filters=True,
+    )
     for raw in sorted(set(listed.split(b"\x00")) - {b""}):
         relative = os.fsdecode(raw)
         # Git paths are POSIX-relative, but a backslash is a legal filename on
@@ -356,14 +475,14 @@ def inspect_repository(path: str | os.PathLike[str]) -> dict:
         remotes = _git(root, "remote").decode("utf-8", "surrogateescape").splitlines()
         if remotes:
             remote = _git(root, "config", "--get", f"remote.{sorted(remotes)[0]}.url", optional=True)
-    origin = canonicalize_origin(os.fsdecode(remote).strip()) if remote else None
+    origin = canonicalize_origin(os.fsdecode(remote).strip(), root) if remote else None
     status = _status(root)
     return {
         "root": str(root),
         "head": head,
         "branch": branch,
         "origin": origin,
-        "identity": origin or f"local:{root}",
+        "identity": _repository_identity(origin, root),
         "dirty": bool(status),
         "fingerprint": _snapshot(root, head, status),
     }

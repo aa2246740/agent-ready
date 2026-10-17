@@ -123,6 +123,16 @@ def javascript_collection(words: list[str]) -> bool:
         if not explicit_script and operation not in {"test", "t", "tst", "jest", "vitest"}:
             return False
         runner = operation
+        if explicit_script:
+            # Lifecycle and build scripts can accept a stray list flag and still
+            # exit zero. A script name that is itself a test runner stays eligible.
+            folded = runner.lower()
+            non_test_scripts = {
+                "build", "lint", "format", "typecheck", "start", "dev", "serve",
+                "clean", "deploy", "release", "prepare", "prepublish",
+            }
+            if folded in non_test_scripts and not any(token in folded for token in ("test", "spec", "jest", "vitest")):
+                return False
     if runner == "vitest" and runner_args[:1] == ["list"]:
         return True
     # A literal `list` alone is never evidence for npm/pnpm/yarn dependency

@@ -72,6 +72,11 @@ def run(args: argparse.Namespace) -> int:
                     continue
                 if type(number) not in (int, float) or not math.isfinite(number):
                     raise ReportError(f"{key}: {field} must be a finite number")
+            numerator = value.get("numerator")
+            denominator = value.get("denominator")
+            if numerator is not None and type(numerator) in (int, float) and type(denominator) in (int, float):
+                if denominator <= 0 or numerator < 0 or numerator > denominator:
+                    raise ReportError("Invalid criterion score fraction")
         print(json_text(score_report(values)), end="")
     elif args.command == "prepare":
         repository = inspect_repository(args.target)

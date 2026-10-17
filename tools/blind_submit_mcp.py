@@ -8,7 +8,6 @@ exposed. The existing readiness validator and scorer remain authoritative.
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import os
 import math
@@ -17,10 +16,15 @@ from pathlib import Path
 import sys
 import time
 
+try:
+    import fcntl
+except ImportError:  # non-POSIX
+    fcntl = None
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent_readiness.catalog import criteria_by_id
 from agent_readiness.condition_evidence import condition_errors
-from agent_readiness.report import read_json, store_report, validate_evaluation
+from agent_readiness.report import json_text, read_json, store_report, validate_evaluation
 
 MAX_BYTES = 512_000
 TOP_KEYS = {"schemaVersion", "rubricVersion", "repository", "apps", "report", "evidence", "actionItems"}
@@ -32,10 +36,46 @@ TOOL = {
 }
 
 
+def _exclusive_lock(handle):
+    if fcntl is not None:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        return
+    try:
+        import msvcrt
+    except ImportError as error:
+        raise OSError("No supported submission lock is available") from error
+    handle.seek(0)
+    if not handle.read(1):
+        handle.write("0")
+        handle.flush()
+    handle.seek(0)
+    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+
+
+def _private_dir(path, *, exist_ok=True):
+    path.mkdir(parents=True, exist_ok=exist_ok)
+    path.chmod(0o700)
+
+
 def save(path, data):
-    with Path(path).open("x", encoding="utf-8") as out:
-        json.dump(data, out, ensure_ascii=False, indent=2, allow_nan=False)
-        out.write("\n")
+    serialized = json_text(data)
+    path = Path(path)
+    _private_dir(path.parent)
+    descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as out:
+        out.write(serialized)
+    path.chmod(0o600)
+
+
+def _request_record(payload):
+    """Persist arguments only when the serialized record stays within MAX_BYTES."""
+    try:
+        raw = json_text(payload)
+    except (TypeError, ValueError):
+        return payload
+    if len(raw.encode("utf-8")) > MAX_BYTES:
+        return {"reason": "payload_too_large", "bytes": len(raw.encode("utf-8"))}
+    return payload
 
 
 def diagnostics(data):
@@ -66,16 +106,70 @@ def diagnostics(data):
     return result
 
 
+def _section_end(value, later_paths, start):
+    """End of this section: the next requested path header, not an internal '---'."""
+    end = len(value)
+    for path in later_paths:
+        for marker in (f"\n---\n{path}:\n", f"\n---\n{path}: Error"):
+            found = value.find(marker, start)
+            if found != -1 and found < end:
+                end = found
+    return end
+
+
+def _multiple_sections(value, paths):
+    """Split a read_multiple_files result without trusting markers inside file text.
+
+    Sections are joined by '\\n---\\n' in request order. A header counts only at the
+    start of the value or immediately after that separator. An earlier file's body
+    may contain '\\n---\\n' (YAML frontmatter) or another path followed by ':\\n'.
+    """
+    if not isinstance(value, str):
+        return []
+    usable = [path for path in paths if isinstance(path, str)]
+    # A file body can reproduce the complete separator plus a later header.
+    # Text framing cannot distinguish those from real headers; ambiguous results
+    # must be read individually rather than credited as successful reads.
+    if len(usable) != len(set(usable)):
+        return []
+    framed = "\n---\n" + value
+    for path in usable:
+        header = re.compile(r"\n---\n" + re.escape(path) + r":(?:\n| Error)")
+        if len(header.findall(framed)) > 1:
+            return []
+    found = []
+    cursor = 0
+    for index, path in enumerate(usable):
+        success = f"{path}:\n"
+        error = f"{path}: Error"
+        if value.startswith(success, cursor):
+            start = cursor + len(success)
+            end = _section_end(value, usable[index + 1:], start)
+            body = value[start:end]
+            if body.strip() and not body.startswith("Error:"):
+                found.append((path, body))
+            cursor = end + len("\n---\n") if value.startswith("\n---\n", end) else end
+        elif value.startswith(error, cursor):
+            end = _section_end(value, usable[index + 1:], cursor)
+            cursor = end + len("\n---\n") if value.startswith("\n---\n", end) else end
+        else:
+            break
+    return found
+
+
 class Gate:
     def __init__(self, config):
         self.config = config
-        self.output = Path(config["output"])
-        self.output.mkdir(parents=True, exist_ok=True)
-        self.template = read_json(config["template"])
+        self.output = Path(config["output"]).resolve()
         self.target = Path(config["target"]).resolve()
         self.state = Path(config["state_dir"]).resolve()
-        if self.output.resolve().is_relative_to(self.target) or self.state.is_relative_to(self.target):
+        # Reject before mkdir so a path inside the target never creates a directory there.
+        inside = self.output == self.target or self.output.is_relative_to(self.target)
+        inside = inside or self.state == self.target or self.state.is_relative_to(self.target)
+        if inside:
             raise ValueError("Submission artifacts and state must be outside the target")
+        _private_dir(self.output)
+        self.template = read_json(config["template"])
         if self.template["repository"]["root"] != str(self.target):
             raise ValueError("Controller target/template mismatch")
 
@@ -90,29 +184,37 @@ class Gate:
                 row = json.loads(line)
             except (ValueError, TypeError):
                 continue  # Current last line may still be being streamed.
+            if not isinstance(row, dict) or not isinstance(row.get("id"), (str, int)):
+                continue
             if row.get("type") == "tool_call":
                 calls[row.get("id")] = row
             elif row.get("type") == "tool_result" and not row.get("isError"):
                 call = calls.get(row.get("id"), {})
-                if call.get("toolName") not in {"blind___read_text_file", "blind___read_multiple_files"}:
+                if not isinstance(call, dict):
+                    continue
+                tool = call.get("toolName")
+                if tool not in {"blind___read_text_file", "blind___read_multiple_files"}:
                     continue
                 args = call.get("parameters", {})
-                for path in ([args["path"]] if "path" in args else args.get("paths", [])):
-                    if isinstance(path, str) and path.startswith("/input/"):
-                        body = row.get("value", "")
-                        if not body and isinstance(row.get("content"), list):
-                            body = "\n".join(part["text"] for part in row["content"]
-                                             if isinstance(part, dict) and isinstance(part.get("text"), str))
-                        if not isinstance(body, str) or not body.strip():
-                            continue
-                        if call.get("toolName") == "blind___read_multiple_files":
-                            value = body
-                            if not isinstance(value, str) or path + ":\n" not in value:
-                                continue
-                            body = value.split(path + ":\n", 1)[1].split("\n---\n", 1)[0]
-                            if body.startswith("Error:") or not body.strip():
-                                continue
-                        contents.setdefault(path[len("/input/"):], []).append(body)
+                if not isinstance(args, dict):
+                    continue
+                body = row.get("value", "")
+                if not body and isinstance(row.get("content"), list):
+                    body = "\n".join(part["text"] for part in row["content"]
+                                     if isinstance(part, dict) and isinstance(part.get("text"), str))
+                if not isinstance(body, str):
+                    continue
+                if tool == "blind___read_multiple_files":
+                    raw_paths = args.get("paths", [])
+                    if not isinstance(raw_paths, list):
+                        continue
+                    for path, section in _multiple_sections(body, raw_paths):
+                        if path.startswith("/input/"):
+                            contents.setdefault(path[len("/input/"):], []).append(section)
+                    continue
+                path = args.get("path")
+                if isinstance(path, str) and path.startswith("/input/") and body.strip():
+                    contents.setdefault(path[len("/input/"):], []).append(body)
         return contents
 
     def read_paths(self):
@@ -164,8 +266,10 @@ class Gate:
     def submit(self, arguments):
         # Lock and persistent attempt reservation prevent parallel calls/restarts
         # from resetting or exceeding the limit. Never count only successes.
-        with (self.output / ".lock").open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+        lock_path = self.output / ".lock"
+        with lock_path.open("a+") as lock:
+            lock_path.chmod(0o600)
+            _exclusive_lock(lock)
             done = self.output / "accepted.json"
             numbers = [int(match.group(1)) for path in self.output.iterdir()
                        if path.is_dir() and (match := re.fullmatch(r"attempt-(\d+)", path.name))]
@@ -180,10 +284,11 @@ class Gate:
             number = max(numbers, default=0) + 1
             used += 1
             attempt = self.output / f"attempt-{number:02d}"
-            attempt.mkdir()
+            _private_dir(attempt, exist_ok=False)
             data = None
             try:
-                save(attempt / "request.json", arguments)
+                # Size the payload before any unbounded request.json write.
+                save(attempt / "request.json", _request_record(arguments))
                 if not isinstance(arguments, dict) or set(arguments) != {"evaluation_json"}:
                     raise ValueError("Only evaluation_json is accepted; paths and commands are not arguments")
                 text = arguments["evaluation_json"]
@@ -191,6 +296,7 @@ class Gate:
                     raise ValueError("evaluation_json must be a UTF-8 JSON string of at most 512000 bytes")
                 evaluation = attempt / "evaluation.json"
                 evaluation.write_text(text, encoding="utf-8")
+                evaluation.chmod(0o600)
                 data = read_json(evaluation)  # Existing duplicate/nonfinite checks.
                 if set(data) != TOP_KEYS:
                     raise ValueError("Expected exactly these top-level keys: " + ", ".join(sorted(TOP_KEYS)))
@@ -243,6 +349,9 @@ def serve(config):
     for line in sys.stdin:
         try:
             request = json.loads(line)
+            if not isinstance(request, dict):
+                print(json.dumps({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid MCP request"}}), flush=True)
+                continue
             if "id" not in request:
                 continue
             method = request.get("method")
@@ -252,9 +361,19 @@ def serve(config):
                 result = {"tools": [TOOL]}
             elif method == "ping":
                 result = {}
-            elif method == "tools/call" and request.get("params", {}).get("name") == TOOL["name"]:
+            elif method == "tools/call":
+                params = request.get("params")
+                if not isinstance(params, dict):
+                    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "error": {"code": -32602, "message": "Invalid params"}}), flush=True)
+                    continue
+                if params.get("name") != TOOL["name"]:
+                    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "error": {"code": -32601, "message": "Method/tool not available"}}), flush=True)
+                    continue
+                arguments = params.get("arguments", {})
+                if not isinstance(arguments, dict):
+                    arguments = {}
                 try:
-                    answer = gate.submit(request["params"].get("arguments", {}))
+                    answer = gate.submit(arguments)
                 except (ValueError, OSError, KeyError, TypeError, OverflowError) as error:
                     # A controller/configuration failure must reach the caller
                     # with its request id, rather than silently closing stdio.

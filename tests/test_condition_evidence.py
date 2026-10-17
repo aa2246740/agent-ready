@@ -13,7 +13,10 @@ from agent_readiness.condition_evidence import condition_errors
 from agent_readiness.prompts import assessment_prompt
 from agent_readiness.report import ReportError, latest_report, new_evaluation, store_report, validate_evaluation
 from agent_readiness.repository import inspect_repository
-from test_blind_submit_mcp import ADAPTER
+try:
+    from tests.test_blind_submit_mcp import ADAPTER
+except ImportError:
+    from test_blind_submit_mcp import ADAPTER
 
 
 class ConditionEvidenceTests(unittest.TestCase):
@@ -268,6 +271,70 @@ class ConditionEvidenceTests(unittest.TestCase):
         self.assertFalse(reply["accepted"])
         self.assertFalse(reply["stop"])
         self.assertEqual(reply["diagnostics"]["invalidRationales"][0]["criterionId"], key)
+
+    def test_dependency_pull_request_rejects_non_pr_urls(self):
+        for url in (
+            "https://github.com/example/project/issues/42",
+            "https://example.com/foo",
+        ):
+            with self.subTest(url=url):
+                text = (
+                    '{"url":"' + url + '",'
+                    '"author":"renovate[bot]",'
+                    '"title":"Update widget dependency to 2.0"}\n'
+                )
+                self.write_source("pr.json", text)
+                records = self.dependency()
+                records[1] = self.record(
+                    "pr.json", "dependency_pull_request",
+                    updater="renovate", url=url, author="renovate[bot]", dependency="widget",
+                )
+                errors = condition_errors(self.data, self.target)
+                self.assertTrue(
+                    any("pull or merge request" in error["error"] for error in errors),
+                    errors,
+                )
+
+    def test_multiline_commented_trigger_cannot_pass(self):
+        for text in ("/*\nschedule\n*/\ncheck_health\n", "<!--\nschedule\n-->\ncheck_health\n"):
+            with self.subTest(text=text):
+                self.write_source("comment-block.txt", text)
+                records = self.alert()
+                records[1] = self.record("comment-block.txt", "automatic_trigger",
+                                         kind="schedule", registration="schedule", handler="check_health")
+                self.assertIn("only in a comment", str(condition_errors(self.data, self.target)))
+
+    def write_source(self, name, text):
+        if not text.endswith("\n"):
+            text += "\n"
+        self.sources[name] = text
+        (self.target / name).write_text(text)
+
+    def test_automatic_trigger_rejects_comments_and_disabled_blocks(self):
+        comment = "# - cron: '0 0 * * *'\ncheck_health\n"
+        self.write_source("comment-registration.txt", comment)
+        records = self.alert()
+        records[1] = self.record(
+            "comment-registration.txt", "automatic_trigger",
+            kind="schedule", registration="- cron: '0 0 * * *'", handler="check_health",
+        )
+        self.assertIn("only in a comment", str(condition_errors(self.data, self.target)))
+
+        self.write_source("disabled-registration.txt", "schedule:\n  enabled: false\ncheck_health\n")
+        records[1] = self.record(
+            "disabled-registration.txt", "automatic_trigger",
+            kind="schedule", registration="schedule", handler="check_health",
+        )
+        self.assertIn("disabled", str(condition_errors(self.data, self.target)))
+
+        self.write_source("enabled-registration.txt", "on: [schedule, workflow_dispatch]\n")
+        self.write_source("monitor.py", 'def schedule():\n    if unhealthy(): notify_ops("outage")\n')
+        records[0] = self.record("monitor.py", "alert_rule", handler="schedule", notifier="notify_ops")
+        records[1] = self.record(
+            "enabled-registration.txt", "automatic_trigger",
+            kind="schedule", registration="schedule", handler="schedule",
+        )
+        self.assertEqual(condition_errors(self.data, self.target), [])
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
   "targetRepository": "aa2246740/agent-ready",
   "rulesSha256": "ed71a19ab3288d32f70744c0cc965360513450da434ad56adda27d50f5628a22",
   "rulesAndScoringUnchanged": true,
-  "onlyRuntimeChange": "Distribution version reset from 0.1.1 to 0.1.0; schema and rubric identifiers are unchanged",
+  "onlyRuntimeChange": "Validation, repository identity, report storage, CLI and bundled tools changed after the 0.1.0 snapshot; rules.json and scoring.py hashes are unchanged",
   "runtimeFiles": [
     {
       "path": "agent_readiness/__init__.py",
@@ -17,8 +17,8 @@
     },
     {
       "path": "agent_readiness/application_scope.py",
-      "sha256": "cde0b94657836d68e4541fe374d17b118fd26326a6d833d340c799a10d35b488",
-      "sameAsMaintainedVersion": true
+      "sha256": "de6baac6792abb70b440a88b7342b8ae900ef0c43f7aa5a3ceb6546e894e9d2e",
+      "sameAsMaintainedVersion": false
     },
     {
       "path": "agent_readiness/catalog.py",
@@ -27,13 +27,13 @@
     },
     {
       "path": "agent_readiness/cli.py",
-      "sha256": "5f896df9f5573009350148ddf2b4681ee23a48db56c13b50c998e81ea5310423",
-      "sameAsMaintainedVersion": true
+      "sha256": "b893ac77112fd3613112f26abd41d1dfb0f3d2784ce411c409d7cbf68a621c3e",
+      "sameAsMaintainedVersion": false
     },
     {
       "path": "agent_readiness/condition_evidence.py",
-      "sha256": "824e1aa6e7e4a1f1f043a14164f91ffd6c0956a823305c8574049242b78c11cb",
-      "sameAsMaintainedVersion": true
+      "sha256": "1e3c8845606b6420a01a061ef5526e5e1ba7e0746a9eab279f1ac14581987ccf",
+      "sameAsMaintainedVersion": false
     },
     {
       "path": "agent_readiness/data/rules.json",
@@ -47,18 +47,18 @@
     },
     {
       "path": "agent_readiness/report.py",
-      "sha256": "55f80f9c955d19b5452996602e53f773e0572f6b2cfd78e1803172ec45908a59",
-      "sameAsMaintainedVersion": true
+      "sha256": "b5a3527f5e4a026fe13824880c62c8a719eca40fa32af1ad8c8ca50645917850",
+      "sameAsMaintainedVersion": false
     },
     {
       "path": "agent_readiness/repository.py",
-      "sha256": "7e91e9cd02545a3b18edd5c69089b820c8980ab6d876ab52d2fa0fedd0c3b040",
-      "sameAsMaintainedVersion": true
+      "sha256": "ad1246b6bb90c3b119ba1bbbe62376c66c28b086a45d696f63f60deab8198278",
+      "sameAsMaintainedVersion": false
     },
     {
       "path": "agent_readiness/runner_contract.py",
-      "sha256": "441f74f2d1c2c75f611209a24a77ed03f6df0ddcc352b565ef97d141e71d23df",
-      "sameAsMaintainedVersion": true
+      "sha256": "fcd4171d99f680bba5b3f63993780d9a8a4f19f73ca7d6e66a3b2f28d0001489",
+      "sameAsMaintainedVersion": false
     },
     {
       "path": "agent_readiness/scoring.py",
@@ -69,6 +69,16 @@
       "path": "scripts/readiness.py",
       "sha256": "c295cead335d6b0683a75a956ed32eb35271f6df27ef3d361bb69a8ebca12ed9",
       "sameAsMaintainedVersion": true
+    },
+    {
+      "path": "tools/blind_submit_mcp.py",
+      "sha256": "dd58c7850b24d55359c39cdb58355d40e8fa5449e98a777c6539e5391bfc5c4a",
+      "sameAsMaintainedVersion": false
+    },
+    {
+      "path": "tools/install_skills.py",
+      "sha256": "426d64b6de74c305612dc29414e38396f7bd357465b4e41dcd48e954a8850f05",
+      "sameAsMaintainedVersion": false
     },
     {
       "path": "skills/agent-readiness/SKILL.md",
@@ -87,15 +97,75 @@
     }
   ],
   "tests": {
-    "executed": 217,
+    "executed": 251,
     "failures": 0,
     "errors": 0,
     "skipped": 0,
-    "seconds": 43.876,
-    "logSha256": "759e440a859cd81203a7b20b2a654be16c4e264f47e52717a8f242866fb691c4",
+    "seconds": 107.397,
+    "logSha256": "c9d73368bda75dd9a5e2d63f3bbbee83ef3c1ed19d3895b7791405cc8c753150",
     "includedModules": 16,
     "excludedMaintenanceTests": 174,
-    "excludedTestsCountedAsPassing": false
+    "excludedTestsCountedAsPassing": false,
+    "suites": [
+      {
+        "command": "python3 -m unittest discover -s tests -v",
+        "environment": {
+          "GO_TEST_BINARY": "official Go 1.27.2 darwin/arm64"
+        },
+        "tests": 251,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "seconds": 107.545,
+        "logSha256": "c9d73368bda75dd9a5e2d63f3bbbee83ef3c1ed19d3895b7791405cc8c753150"
+      },
+      {
+        "command": "python3 -m unittest discover -s tests -v",
+        "environment": {
+          "GO_TEST_BINARY": "official Go 1.27.2 darwin/arm64",
+          "TMPDIR": "/tmp"
+        },
+        "tests": 251,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "seconds": 102.966,
+        "logSha256": "dca48d91c775c8b2fbc6731fe87bd4f8215728971a88d45ee36d855b6c142d6c"
+      },
+      {
+        "command": "python3 -m unittest tests/test_subdirectory_cd.py",
+        "environment": {
+          "GO_TEST_BINARY": "official Go 1.27.2 darwin/arm64"
+        },
+        "tests": 10,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "seconds": 1.895,
+        "logSha256": "c407a9e8818d350b589f8f129458265b6a31f1870315b9a0dabd8449649ea229"
+      },
+      {
+        "command": "pytest --import-mode=importlib",
+        "environment": {
+          "GO_TEST_BINARY": "official Go 1.27.2 darwin/arm64"
+        },
+        "tests": 251,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "seconds": 107.342,
+        "logSha256": "d65672e543ea039d36a94a31e6a7e2a4a9663125583b9741967785e5a118719f"
+      }
+    ],
+    "sourceStableDuringSuites": true,
+    "adversarialProbes": {
+      "total": 88,
+      "passed": 88,
+      "snapshotMembershipGitSubprocesses": 2,
+      "resultsSha256": "7818be20b82d34aeda900ecfa46b4846aaff6f03449330178dd589583fda85ac",
+      "scriptSha256": "aae9b348a0e86db75cd9d82359591306e9954a43d95f04dc2d6b657248480c5b"
+    },
+    "goRegressionTestsActuallyRun": 7
   },
   "scope": "Local synthetic regression, real child-command evidence, report history, restricted submission, and isolated skill installation; not a new real-model assessment",
   "newRealModelCalls": 0,
@@ -107,5 +177,61 @@
     "old Git objects, branches and tags"
   ],
   "licenseReview": "Upstream rule text and adapted prompts remain. A new repository and version do not establish redistribution authorization. See NOTICE.md.",
-  "ciConfigured": false
+  "ciConfigured": false,
+  "environment": {
+    "python": "3.14.7",
+    "pytest": "pytest 9.1.1",
+    "git": "git version 2.54.0 (Apple Git-157)",
+    "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "go": "go version go1.27.2 darwin/arm64",
+    "goArchiveSha256": "76812b213b1b2302c978d28fa52fa92d541704b9e7d9d5db8002c50e4018c4c5",
+    "goSource": "https://go.dev/dl/go1.27.2.darwin-arm64.tar.gz"
+  },
+  "validatedAt": "2026-10-17T03:44:09.665458+00:00",
+  "validationFiles": [
+    {
+      "path": "docs/validation.md",
+      "sha256": "48a4f4137259d068067b33eeb9e42d1d8e9d4533c091a9deef918e6b6b4a8924"
+    },
+    {
+      "path": "pyproject.toml",
+      "sha256": "ef427def990197d4d33769361e402316bcd6d2f9153b4abf95d157f79adcc0e7"
+    },
+    {
+      "path": "tests/test_application_scope.py",
+      "sha256": "81eb274bab2f0d7a404c907d4342b38ebadec63955f4e4a4c50649f6658e75eb"
+    },
+    {
+      "path": "tests/test_blind_submit_mcp.py",
+      "sha256": "91030b45608af5721f7d139176e0840f1ad859fbe2b7e3e7f379d9e3e7df1756"
+    },
+    {
+      "path": "tests/test_condition_evidence.py",
+      "sha256": "c618c1ca23dda54efbb3630e7f16c20144546df8dad6532dfebb2c35d038f3c0"
+    },
+    {
+      "path": "tests/test_dependency_listing_contract.py",
+      "sha256": "ee3d6ed085aa169b42f46fe14b3135707cb0d8e1d478850ec441fcbce11b5242"
+    },
+    {
+      "path": "tests/test_repository.py",
+      "sha256": "2983752ec5529b751c8c4246e824138e8b2d0c6d6d588d33cd034a53528712a1"
+    },
+    {
+      "path": "tests/test_runner_context.py",
+      "sha256": "13cd366c33f8a36ecd35da9886ef5bd2678e9e9ab515650ca15b59ea7fb9c3c0"
+    },
+    {
+      "path": "tests/test_skill_install.py",
+      "sha256": "766321f39e5ba0fb3ec96461f663d47d8519a62f1bec120b8dc9a4c28c8af200"
+    },
+    {
+      "path": "tests/test_subdirectory_cd.py",
+      "sha256": "64d88eb4fcde872ece1fdabd0d63fc4777948ee5f3e53bbb917860aa93f393ee"
+    },
+    {
+      "path": "tests/test_workflow.py",
+      "sha256": "0bb07ad128b47328b585ef1358f8208c03ef876c4ce095bf366df04381be52e0"
+    }
+  ]
 }

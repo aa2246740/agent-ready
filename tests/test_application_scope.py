@@ -12,7 +12,7 @@ class AttributionTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='scope-fixture-')
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name).resolve()
         self.apps = {'apps/server': {}, 'apps/docs': {}}
         (self.root / 'package.json').write_text(json.dumps({'private': True, 'workspaces': ['apps/*']}))
         self.files = {}
@@ -142,6 +142,13 @@ class AttributionTests(unittest.TestCase):
             self.assertFalse(self.check('.', 'npm test --workspaces -- --listTests', output, historical=True))
             self.assertTrue(self.check('apps/docs', 'npm test --workspaces -- --listTests', output, historical=True))
             self.assertTrue(self.check('.', 'npm test --workspaces --include-workspace-root -- --listTests', output, historical=True))
+
+    def test_single_root_app_rejects_prefix_outside_repository(self):
+        self.apps = {'.': {}}
+        self.assertTrue(self.check('.', 'npx jest --listTests', str(self.root / 'root.test.ts')))
+        self.assertTrue(self.check('.', 'npm --prefix . test -- --listTests', str(self.root / 'root.test.ts')))
+        self.assertFalse(self.check('.', 'npm --prefix /outside/repo test -- --listTests'))
+        self.assertFalse(self.check('.', 'npm --prefix ../outside test -- --listTests'))
 
     def test_report_rejects_relabelled_server_workspace_record(self):
         record = {'kind': 'command', 'command': 'yarn workspace @fixture/server jest --listTests',

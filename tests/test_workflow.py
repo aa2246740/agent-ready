@@ -17,6 +17,9 @@ import sys
 import tempfile
 import unittest
 
+from agent_readiness.report import ReportError, latest_report, store_report
+from agent_readiness.repository import inspect_repository
+
 
 PROJECT = Path(__file__).resolve().parents[1]
 CLI = PROJECT / "scripts" / "readiness.py"
@@ -528,6 +531,104 @@ class WorkflowTests(unittest.TestCase):
                         self.cli(command, self.root, "--state-dir", self.state, option, ok=False)
                 self.assertEqual(self.tree(self.state), before)
         path.write_text(json.dumps(original), encoding="utf-8")
+
+    def test_lone_surrogate_in_rationale_or_note_leaves_no_empty_file(self):
+        _, template = self.prepare()
+        base = self.completed(template)
+        mutations = {
+            "rationale": lambda data: data["report"]["lint_config"].__setitem__("rationale", "bad \ud800 rationale"),
+            "note": lambda data: data["evidence"]["lint_config"][0].__setitem__("note", "bad \ud800 note"),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(field=label):
+                data = deepcopy(base)
+                mutate(data)
+                before = self.tree(self.state)
+                with self.assertRaisesRegex(ReportError, "surrogate"):
+                    store_report(data, self.root, self.state)
+                self.assertEqual(self.tree(self.state), before)
+                if self.state.exists():
+                    for path in self.state.rglob("*"):
+                        if path.is_file():
+                            self.assertGreater(path.stat().st_size, 0, path)
+
+    def test_monorepo_tooling_cannot_be_skipped_for_multiple_applications(self):
+        for name in ("one", "two"):
+            directory = self.root / "apps" / name
+            directory.mkdir(parents=True)
+            (directory / "README.md").write_text(f"Synthetic application {name}\n", encoding="utf-8")
+        _, template = self.prepare()
+        multiple = self.completed(template, apps={
+            "apps/one": {"description": "Synthetic first application"},
+            "apps/two": {"description": "Synthetic second application"},
+        })
+        multiple["report"]["monorepo_tooling"]["numerator"] = None
+        rejected = self.reject_submission(multiple)
+        self.assertIn("monorepo_tooling cannot be skipped when multiple applications exist", rejected.stderr)
+        single = self.completed(template)
+        single["report"]["monorepo_tooling"]["numerator"] = None
+        self.submit(single)
+
+    def test_preupgrade_local_report_pointer_and_judgments_remain_readable(self):
+        import hashlib
+        _, template = self.prepare()
+        data = self.completed(template)
+        receipt = store_report(data, self.root, self.state)
+        report_path = Path(receipt["report"])
+        stored = json.loads(report_path.read_text(encoding="utf-8"))
+        stored["report"]["agents_md"]["numerator"] = 0
+        stored["report"]["agents_md_validation"]["numerator"] = 1
+        report_path.write_text(json.dumps(stored), encoding="utf-8")
+        pointer = report_path.parent / "latest.json"
+        index = json.loads(pointer.read_text(encoding="utf-8"))
+        index["sha256"] = hashlib.sha256(report_path.read_bytes()).hexdigest()
+        pointer.write_text(json.dumps(index), encoding="utf-8")
+        repository = inspect_repository(self.root)
+        old_directory = self.state / hashlib.sha256(repository["identity"].encode()).hexdigest()[:24]
+        report_path.parent.rename(old_directory)
+        loaded = latest_report(repository, self.state)
+        self.assertEqual(loaded["report"]["agents_md_validation"]["numerator"], 1)
+        with self.assertRaisesRegex(ReportError, "requires agents_md"):
+            store_report(stored, self.root, self.state)
+
+    def test_relative_shared_origins_do_not_share_latest_report(self):
+        self.git("remote", "add", "origin", "../shared.git")
+        other = self.base / "other-checkout"
+        other.mkdir()
+        for args in (
+            ["git", "init", "-q", "-b", "main", str(other)],
+            ["git", "-C", str(other), "config", "user.email", "workflow-tests@example.invalid"],
+            ["git", "-C", str(other), "config", "user.name", "Synthetic Workflow Fixture"],
+        ):
+            self.process(args)
+            self.assertEqual(self.command_results[-1].returncode, 0, self.command_results[-1].stderr)
+        (other / "README.md").write_text("# Synthetic second checkout\n", encoding="utf-8")
+        for args in (
+            ["git", "-C", str(other), "add", "."],
+            ["git", "-C", str(other), "commit", "-m", "Synthetic second checkout"],
+            ["git", "-C", str(other), "remote", "add", "origin", "../shared.git"],
+        ):
+            self.process(args)
+            self.assertEqual(self.command_results[-1].returncode, 0, self.command_results[-1].stderr)
+
+        def publish(root, marker):
+            output = self.base / f"task-{marker}"
+            receipt = json.loads(self.cli("prepare", root, "--output", output, "--state-dir", self.state).stdout)
+            data = self.completed(json.loads(Path(receipt["evaluation"]).read_text(encoding="utf-8")))
+            data["report"]["readme"]["rationale"] = marker
+            self.cli("report", root, "--input", self.save_input(data), "--state-dir", self.state)
+            return inspect_repository(root)
+
+        left = publish(self.root, "Left checkout keeps its own latest report.")
+        right = publish(other, "Right checkout keeps its own latest report.")
+        self.assertEqual(left["origin"], right["origin"])
+        self.assertNotEqual(left["identity"], right["identity"])
+        self.assertTrue(str(left["origin"]).endswith("/shared"))
+        left_report = latest_report(left, self.state)
+        right_report = latest_report(right, self.state)
+        self.assertEqual(left_report["report"]["readme"]["rationale"], "Left checkout keeps its own latest report.")
+        self.assertEqual(right_report["report"]["readme"]["rationale"], "Right checkout keeps its own latest report.")
+        self.assertNotEqual(left_report["id"], right_report["id"])
 
 
 if __name__ == "__main__":

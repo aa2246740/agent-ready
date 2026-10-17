@@ -15,19 +15,24 @@ import tempfile
 import unittest
 
 from agent_readiness.report import ReportError, _test_evidence
-import test_empty_command_output as fixture
+try:
+    from tests import test_empty_command_output as fixture
+except ImportError:
+    import test_empty_command_output as fixture
 
 
+@unittest.skipUnless(os.environ.get("GO_TEST_BINARY") or shutil.which("go"), "go is required")
 class RunnerContextTests(unittest.TestCase):
-    setUp = fixture.EmptyCommandOutputTests.setUp
     cli = fixture.EmptyCommandOutputTests.cli
 
     @classmethod
     def setUpClass(cls):
         explicit_go = os.environ.get("GO_TEST_BINARY")
         cls.go = explicit_go or shutil.which("go")
+        cls.go_skip = None
         if not cls.go:
-            raise unittest.SkipTest("Go runtime unavailable for actual subprocess regression")
+            cls.go_skip = "go is required"
+            return
         try:
             version = subprocess.run([cls.go, "version"], capture_output=True, text=True, timeout=15)
             valid = version.returncode == 0 and re.match(r"^go version go\d+\.", version.stdout)
@@ -36,10 +41,16 @@ class RunnerContextTests(unittest.TestCase):
         if not valid:
             if explicit_go:
                 raise AssertionError("Explicit GO_TEST_BINARY is not a working Go runtime")
-            raise unittest.SkipTest("Automatically discovered go command is not a working Go runtime")
+            cls.go_skip = "Automatically discovered go command is not a working Go runtime"
+            return
         cache = tempfile.TemporaryDirectory(prefix="readiness-go-evidence-cache-")
         cls.addClassCleanup(cache.cleanup)
         cls.env = dict(os.environ, GOCACHE=cache.name, GOTOOLCHAIN="local", GOPROXY="off", GOSUMDB="off")
+
+    def setUp(self):
+        if self.go_skip:
+            self.skipTest(self.go_skip)
+        fixture.EmptyCommandOutputTests.setUp(self)
 
     def go_fixture(self, subdirectory="."):
         path = self.root / subdirectory
@@ -156,3 +167,124 @@ class RunnerContextTests(unittest.TestCase):
                 item = {"kind": "command", "command": "cd . && " + command, "cwd": ".",
                         "exitCode": 0, "output": output, "timeoutSeconds": 30}
                 self.assert_runnable(item, passing=False)
+
+
+class RootCwdContractTests(unittest.TestCase):
+    """Captured records only. These checks do not execute the recorded runners."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="readiness-root-cwd-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name) / "repo"
+        (self.root / "apps" / "a").mkdir(parents=True)
+        (self.root / "apps" / "b").mkdir(parents=True)
+        tests = self.root / "tests"
+        tests.mkdir()
+        (tests / "test_a.py").write_text("def test_one():\n    assert 1\n\ndef test_two():\n    assert 2\n")
+        self.single = {".": {"description": "Synthetic single application"}}
+        self.multi = {
+            "apps/a": {"description": "Synthetic application a"},
+            "apps/b": {"description": "Synthetic application b"},
+        }
+
+    def row(self, command, output, application=None):
+        item = {
+            "kind": "command", "command": command, "cwd": ".", "exitCode": 0,
+            "output": output, "timeoutSeconds": 30,
+        }
+        if application is not None:
+            item["application"] = application
+        return item
+
+    def assert_rejected(self, command, output, apps=None, application=None):
+        with self.assertRaises(ReportError):
+            _test_evidence([self.row(command, output, application)], 1, apps or self.single, self.root)
+
+    def assert_accepted(self, command, output, apps=None, application=None):
+        _test_evidence([self.row(command, output, application)], 1, apps or self.single, self.root)
+
+    def test_plain_cwd_rejects_retarget_shell_and_non_runners(self):
+        collected = "collected 1 item\n"
+        for command in (
+            "env -C /other/repo pytest --collect-only tests/test_a.py",
+            'sh -c "echo test"',
+            "python3 -m pytest --collect-only --rootdir=/elsewhere tests/test_a.py",
+            "test -d tests",
+            "git log --grep test",
+        ):
+            with self.subTest(command=command):
+                self.assert_rejected(command, collected)
+
+    def test_root_scope_checks_include_environment_and_config_options(self):
+        for command in (
+            "pytest --collect-only -c ../outside/config.ini tests/test_a.py",
+            "PYTEST_ADDOPTS='--rootdir=/outside' pytest --collect-only tests/test_a.py",
+            "PYTEST_ADDOPTS='-c ../outside/config.ini' pytest --collect-only tests/test_a.py",
+        ):
+            with self.subTest(command=command):
+                self.assert_rejected(command, "collected 1 item\n")
+
+    def test_local_pytest_config_remains_valid_but_other_app_config_is_rejected(self):
+        self.assert_accepted("pytest --collect-only -c tests/config.ini tests/test_a.py", "collected 2 items\n")
+        self.assert_rejected("pytest --collect-only -c apps/b/pytest.ini apps/a/tests/test_a.py",
+                             "collected 2 items\n", self.multi, "apps/a")
+
+    def test_scope_selectors_cannot_follow_symlinks_to_other_apps(self):
+        (self.root / "alias").symlink_to(self.root / "apps" / "b", target_is_directory=True)
+        self.assert_rejected("go test ./alias/...", "ok example.invalid/b 0.01s\n", self.multi, "apps/a")
+        self.assert_rejected("npm --prefix alias test -- --listTests", "tests/example.test.ts\n",
+                             self.multi, "apps/a")
+
+    def test_every_wrapper_validates_the_inner_runner(self):
+        for wrapper in ("uv", "poetry", "pdm", "pipenv", "hatch"):
+            with self.subTest(wrapper=wrapper):
+                self.assert_accepted(f"{wrapper} run pytest --collect-only tests/test_a.py", "collected 2 items\n")
+                self.assert_rejected(f"{wrapper} run git log --grep test", "test\n")
+                self.assert_rejected(f"{wrapper} --project apps/b run pytest --collect-only tests/test_a.py",
+                                     "collected 2 items\n")
+
+    def test_missing_test_file_does_not_count_even_when_parent_is_missing(self):
+        self.assert_rejected("pytest --collect-only missing/test_a.py", "collected 2 items\n")
+
+    def test_nonexecuting_runner_modes_do_not_count(self):
+        for command in (
+            "go version test", "go help test", "go test -c", "go test -list Test",
+            "cargo test --no-run=true", "cargo test -- --list", "ctest -N",
+            "ctest --show-only=json-v1", "dotnet test --list-tests",
+            "rspec --dry-run", "phpunit --list-tests", "mix help test", "dart help test",
+            "deno info test", "bundle exec rake -T", "ctest --help-command test", "go test -h", "go test -n", "bundle exec rake -T test",
+        ):
+            with self.subTest(command=command):
+                self.assert_rejected(command, "test fixture\n")
+
+    def test_uv_run_accepts_one_file_collection_and_rejects_execution(self):
+        accepted = "uv run pytest --collect-only tests/test_a.py"
+        self.assert_accepted(accepted, "collected 1 item\n")
+        self.assert_rejected("uv run pytest tests", "collected 1 item\n")
+        self.assert_rejected("uv run pytest tests", "3 passed\n")
+        self.assert_rejected(accepted, "3 passed\n")
+
+    def test_quiet_pytest_count_and_timeout_keyword_are_accepted(self):
+        self.assert_accepted("pytest --collect-only -qq tests/test_a.py", "tests/test_a.py: 2\n")
+        self.assert_accepted("pytest --collect-only -k timeout tests/test_a.py", "collected 1 item\n")
+
+    def test_root_command_labeled_as_another_application_is_rejected(self):
+        cases = (
+            ("go test ./apps/a/...", "ok example.invalid/apps/a 0.012s\n"),
+            (
+                "mvn -f apps/a/pom.xml -Dtest=FooTest test",
+                "Running FooTest\nTests run: 1, Failures: 0, Errors: 0, Skipped: 0\n",
+            ),
+            (
+                "gradle :apps:a:test --rerun-tasks --tests FooTest",
+                "> Task :apps:a:test\n",
+            ),
+        )
+        for command, output in cases:
+            with self.subTest(command=command):
+                self.assert_rejected(command, output, self.multi, "apps/b")
+                self.assert_accepted(command, output, self.multi, "apps/a")
+
+
+if __name__ == "__main__":
+    unittest.main()
