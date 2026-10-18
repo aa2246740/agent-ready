@@ -103,45 +103,170 @@ def _quoted_source(item: dict, root: Path, quote: str) -> bool:
     return quote in "".join(excerpt)
 
 
-def _comment_mask(quote: str) -> list[bool]:
+_HASH_SUFFIXES = {
+    ".yml", ".yaml", ".toml", ".ini", ".cfg", ".conf", ".cnf", ".properties", ".env", ".sh", ".bash", ".zsh",
+    ".py", ".rb", ".pl", ".r", ".nix", ".ps1", ".mk", ".mak", ".cron", ".crontab", ".service", ".timer", ".socket",
+}
+_HASH_NAMES = ("dockerfile", "containerfile", "makefile", "gnumakefile", "crontab", "procfile", "gemfile", "rakefile", "justfile", ".env")
+_C_LIKE_SUFFIXES = {
+    ".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs", ".go", ".java", ".kt", ".kts", ".c", ".cc", ".cpp", ".h", ".hpp",
+    ".cs", ".rs", ".swift", ".scala", ".groovy", ".gradle", ".dart", ".jsonc", ".json5",
+}
+_MARKUP_SUFFIXES = {".html", ".htm", ".xhtml", ".xml", ".md", ".markdown", ".vue", ".svelte"}
+_HASH, _SLASH, _BLOCK, _MARKUP = "#", "//", "/*", "<!--"
+
+
+def _comment_syntax(path: str | None) -> frozenset[str]:
+    """Comment markers of the cited file's type; unknown types and commands have none."""
+    if not path:
+        return frozenset()
+    file = Path(path)
+    name, suffix = file.name.lower(), file.suffix.lower()
+    if suffix in _C_LIKE_SUFFIXES or name == "jenkinsfile":
+        return frozenset({_SLASH, _BLOCK})
+    if suffix in {".tf", ".tfvars", ".hcl", ".php"}:
+        return frozenset({_HASH, _SLASH, _BLOCK})
+    if suffix in _MARKUP_SUFFIXES:
+        return frozenset({_MARKUP})
+    if suffix in _HASH_SUFFIXES or name.startswith(_HASH_NAMES) or name.endswith(".dockerfile"):
+        return frozenset({_HASH})
+    return frozenset()
+
+
+def _comment_end(quote: str, index: int, syntax: frozenset[str]) -> int | None:
+    """End offset of a comment starting at ``index``, or None if none starts there."""
+    for opener, closer in ((_BLOCK, "*/"), (_MARKUP, "-->")):
+        if opener in syntax and quote.startswith(opener, index):
+            close = quote.find(closer, index + len(opener))
+            return len(quote) if close < 0 else close + len(closer)
+    line_comment = (
+        (_SLASH in syntax and quote.startswith("//", index) and quote[index - 1:index] != ":")
+        or (_HASH in syntax and quote[index] == "#" and (index == 0 or quote[index - 1].isspace()))
+    )
+    if line_comment:
+        stop = quote.find("\n", index)
+        return len(quote) if stop < 0 else stop
+    return None
+
+
+def _comment_mask(quote: str, path: str | None = None) -> list[bool]:
+    """Mark characters of ``quote`` that are comments in the cited file's syntax.
+
+    Markers inside quoted strings do not start a comment. Strings end at the
+    line end; a quote only opens a string when it does not follow a letter or
+    digit (so an apostrophe inside a word is text). Block and HTML comments
+    span lines and stay open to the end of an excerpt that does not close them.
+    """
+    syntax = _comment_syntax(path)
     mask = [False] * len(quote)
-    # Multiline comments need a state spanning lines, including bare text
-    # between /* ... */ and HTML comment markers.
-    for match in re.finditer(r"/\*.*?(?:\*/|$)|<!--.*?(?:-->|$)", quote, re.S):
-        mask[match.start():match.end()] = [True] * (match.end() - match.start())
-    offset = 0
-    for line in quote.splitlines(keepends=True):
-        stripped = line.lstrip()
-        comment_at = None
-        if stripped.startswith(("#", "//", "/*", "<!--")) or (stripped.startswith("*") and not stripped.startswith("*/")):
-            comment_at = len(line) - len(stripped)
+    if not syntax:
+        return mask
+    strings = "" if _MARKUP in syntax else "\"'`" if _SLASH in syntax else "\"'"
+    index, string = 0, None
+    while index < len(quote):
+        char = quote[index]
+        if char == "\n":
+            string = None
+        elif string:
+            if char == "\\" and string != "'":
+                index += 1
+            elif char == string:
+                string = None
+        elif char in strings and (index == 0 or not quote[index - 1].isalnum()):
+            string = char
         else:
-            marker = re.search(r"(?:^|\s)(?:#|//)|/\*|<!--", line)
-            if marker:
-                token = re.search(r"(#|//|/\*|<!--)", line[marker.start():])
-                comment_at = marker.start() + token.start()
-        if comment_at is not None:
-            for index in range(comment_at, len(line)):
-                mask[offset + index] = True
-        offset += len(line)
+            stop = _comment_end(quote, index, syntax)
+            if stop is not None:
+                mask[index:stop] = [True] * (stop - index)
+                index = stop
+                continue
+        index += 1
     return mask
 
 
-def _strip_trailing_comment(line: str) -> str:
-    if line.lstrip().startswith(("#", "//", "/*", "*", "<!--")):
-        return ""
-    marker = re.search(r"\s(?:#|//).*$", line)
-    if marker:
-        return line[:marker.start()]
-    return line
+# Manual or disabled triggers are recognized by structure only: a workflow
+# whose `on:` block has just workflow_dispatch, an explicit --once flag, or an
+# `enabled: false` key in the registration's own block. Free words such as
+# "manual" or "planned" in names and values say nothing about the trigger.
+_ONCE = re.compile(r"(?<![\w-])--once(?![\w-])")
+_ENABLED_FALSE = re.compile(r"(?<![\w-])[\"']?enabled[\"']?\s*[:=]\s*[\"']?false\b", re.I)
+_DISPATCH = re.compile(r"(?<![\w.-])workflow_dispatch\b")
+_AUTOMATIC_EVENT = re.compile(
+    r"(?<![\w.-])(?:schedule|cron|push|pull_request|pull_request_target|pull_request_review|pull_request_review_comment"
+    r"|release|workflow_run|workflow_call|repository_dispatch|issues|issue_comment|create|delete|deployment"
+    r"|deployment_status|discussion|discussion_comment|fork|gollum|label|merge_group|milestone|page_build|public"
+    r"|registry_package|status|watch|check_run|check_suite|branch_protection_rule)[\"']?\s*(?:[:,\]}]|$)",
+    re.M,
+)
+_ON_KEY = re.compile(r"\s*[\"']?on[\"']?\s*:")
+_SECTION = re.compile(r"\s*\[[^\[\]\n]*\]\s*$")  # INI/TOML table header
 
 
-def _automatic_trigger_error(quote: str, registration: str) -> str | None:
-    manual = re.compile(
-        r"\b(?:manual|workflow_dispatch|disabled|planned|TODO)\b|--once\b|\benabled\s*[:=]\s*false\b",
-        re.I,
-    )
-    mask = _comment_mask(quote)
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def _own_block(lines: list[str], index: int) -> tuple[int, int]:
+    """Line range of ``lines[index]`` and everything nested under it."""
+    base, header = _indent(lines[index]), _SECTION.match(lines[index]) is not None
+    end = index + 1
+    while end < len(lines) and not (
+            lines[end].strip() and (_SECTION.match(lines[end]) if header else _indent(lines[end]) <= base)):
+        end += 1
+    return index, end
+
+
+def _sibling_range(lines: list[str], index: int) -> tuple[int, int, int | None]:
+    """Lines sharing ``lines[index]``'s parent, and the parent line if it is in view."""
+    base = _indent(lines[index])
+
+    def leaves(text: str) -> bool:
+        return bool(text.strip()) and (_SECTION.match(text) is not None or _indent(text) < base)
+
+    start, end = index, index + 1
+    while start > 0 and not leaves(lines[start - 1]):
+        start -= 1
+    while end < len(lines) and not leaves(lines[end]):
+        end += 1
+    return start, end, (start - 1 if start > 0 else None)
+
+
+def _event_scope(lines: list[str], index: int) -> list[str]:
+    """The `on:` block around a registration, else the registration's sibling lines."""
+    start, end, parent = _sibling_range(lines, index)
+    siblings, current = lines[start:end], index
+    while True:
+        if _ON_KEY.match(lines[current]):
+            first, last = _own_block(lines, current)
+            return lines[first:last]
+        if parent is None:
+            return siblings
+        current = parent
+        parent = _sibling_range(lines, current)[2]
+
+
+def _manual_registration(lines: list[str], first: int, last: int) -> bool:
+    start, end = _own_block(lines, first)
+    own = "\n".join(lines[start:max(end, last + 1)])
+    if _ONCE.search(own) or _ENABLED_FALSE.search(own):
+        return True
+    base = _indent(lines[first])
+    first_sibling, last_sibling, _ = _sibling_range(lines, first)
+    for text in lines[first_sibling:last_sibling] if not _SECTION.match(lines[first]) else ():
+        if _indent(text) == base and _ENABLED_FALSE.match(re.sub(r"^\s*(?:-\s+)?", "", text)):
+            return True
+    events = "\n".join(_event_scope(lines, first))
+    return _DISPATCH.search(events) is not None and _AUTOMATIC_EVENT.search(events) is None
+
+
+def _automatic_trigger_error(quote: str, registration: str, path: str | None = None) -> str | None:
+    """Reject a registration that is only a comment or is structurally manual/disabled.
+
+    ``path`` is the cited file; without it (command output) nothing is treated
+    as a comment. A registration quoted several times is accepted when at least
+    one live occurrence is not manual.
+    """
+    mask = _comment_mask(quote, path)
     positions = []
     start = 0
     while True:
@@ -150,40 +275,18 @@ def _automatic_trigger_error(quote: str, registration: str) -> str | None:
             break
         positions.append(found)
         start = found + max(len(registration), 1)
-    if positions and all(all(mask[index:index + len(registration)]) for index in positions):
+    live = [found for found in positions if not all(mask[found:found + len(registration)])]
+    if positions and not live:
         return "registration occurs only in a comment; cite an enabled automatic trigger"
-    if manual.search(registration):
-        cites_schedule = re.search(r"\bschedule\b", registration, re.I) is not None
-        other_manual = re.search(r"\b(?:manual|disabled|planned|TODO)\b|--once\b|\benabled\s*[:=]\s*false\b", registration, re.I)
-        line_has_both = any(
-            re.search(r"\bschedule\b", _strip_trailing_comment(line), re.I)
-            and re.search(r"\bworkflow_dispatch\b", _strip_trailing_comment(line), re.I)
-            for line in quote.splitlines()
-        )
-        if not (cites_schedule and line_has_both and not other_manual):
-            return "registration describes a manual, test-only, planned or disabled trigger; cite the enabled automatic registration"
-    for found in positions:
-        line_start = quote.rfind("\n", 0, found) + 1
-        # A short token such as "schedule" is judged with the indented block
-        # that follows it, so `enabled: false` on the next line still counts.
-        rest = quote[line_start:]
-        lines = rest.splitlines()
-        block = lines[:1]
-        for follower in lines[1:]:
-            if follower.strip() and not follower.startswith((" ", "\t")):
-                break
-            block.append(follower)
-        active = "\n".join(_strip_trailing_comment(line) for line in block)
-        if not active.strip():
-            continue
-        cites_schedule = re.search(r"\bschedule\b", registration, re.I) is not None
-        if cites_schedule and re.search(r"\bschedule\b", active, re.I) and re.search(r"\bworkflow_dispatch\b", active, re.I):
-            if not re.search(r"\benabled\s*[:=]\s*false\b|\bdisabled\b", active, re.I):
-                continue
-        if re.search(r"\benabled\s*[:=]\s*false\b|\bdisabled\b|\b(?:manual|planned|TODO)\b|--once\b", active, re.I):
-            return "registration describes a manual, test-only, planned or disabled trigger; cite the enabled automatic registration"
-        if re.search(r"\bworkflow_dispatch\b", active, re.I) and not cites_schedule:
-            return "registration describes a manual, test-only, planned or disabled trigger; cite the enabled automatic registration"
+    active = "".join(" " if masked and char != "\n" else char for char, masked in zip(quote, mask))
+    lines = active.split("\n")
+    for found in live:
+        first = active.count("\n", 0, found)
+        last = active.count("\n", 0, found + len(registration))
+        if not _manual_registration(lines, first, last):
+            return None
+    if live:
+        return "registration describes a manual, test-only, planned or disabled trigger; cite the enabled automatic registration"
     return None
 
 
@@ -268,7 +371,7 @@ def condition_errors(data: dict, root: Path) -> list[dict]:
                 # Reject explicit contradictions, not guess arbitrary source
                 # semantics. A manual trigger may coexist with an automatic
                 # one: cite the latter registration separately in that case.
-                trigger_error = _automatic_trigger_error(quote, registration)
+                trigger_error = _automatic_trigger_error(quote, registration, item["path"] if item["kind"] == "file" else None)
                 if trigger_error:
                     error(condition, trigger_error)
                     continue

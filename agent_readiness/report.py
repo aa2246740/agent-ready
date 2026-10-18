@@ -86,12 +86,16 @@ _WRAPPERS = {"uv", "poetry", "pdm", "pipenv", "hatch"}
 _SAFE_ASSIGNMENT = re.compile(
     r"^(?:PYTHONDONTWRITEBYTECODE=1|PYTEST_ADDOPTS=.*|CI=.*|NO_COLOR=.*|FORCE_COLOR=.*|TZ=.*|LANG=.*|LC_ALL=.*)$"
 )
+# Flags of `go build`/`go test` that take a separate value (`go help build`,
+# `go help testflag`). Boolean flags (-race, -v, -short, -cover, -json,
+# -failfast, -buildvcs ...) take none; `-C dir` is a retarget rejected earlier.
 _GO_VALUE_FLAGS = {
-    "-bench", "-benchtime", "-blockprofile", "-blockprofilerate", "-count", "-covermode",
-    "-coverpkg", "-coverprofile", "-cpu", "-cpuprofile", "-exec", "-fuzz", "-fuzzcachedir",
-    "-fuzzminimizetime", "-fuzztime", "-fuzzworker", "-list", "-memprofile", "-memprofilerate",
-    "-mutexprofile", "-mutexprofilefraction", "-outputdir", "-parallel", "-run", "-shuffle",
-    "-skip", "-timeout", "-trace", "-vet", "-o", "-p",
+    "-asmflags", "-bench", "-benchtime", "-blockprofile", "-blockprofilerate", "-buildmode", "-compiler",
+    "-count", "-covermode", "-coverpkg", "-coverprofile", "-cpu", "-cpuprofile", "-exec", "-fuzz",
+    "-fuzzcachedir", "-fuzzminimizetime", "-fuzztime", "-fuzzworker", "-gccgoflags", "-gcflags",
+    "-installsuffix", "-ldflags", "-list", "-memprofile", "-memprofilerate", "-mod", "-modfile",
+    "-mutexprofile", "-mutexprofilefraction", "-o", "-outputdir", "-overlay", "-p", "-parallel", "-pgo",
+    "-pkgdir", "-run", "-shuffle", "-skip", "-tags", "-timeout", "-toolexec", "-trace", "-vet",
 }
 _DRY_RUN_FLAGS = {"--no-run", "--dry-run", "--list-targets", "-n", "-N",
                   "--list", "--list-tests", "--list-suites", "--show-only"}
@@ -119,6 +123,28 @@ def _command_position_is_forbidden(words: list[str]) -> bool:
         if index < len(segment) and Path(segment[index]).name in _FORBIDDEN_COMMANDS:
             return True
     return False
+
+
+def _root_alias_relative(destination: Path, root: Path) -> Path | None:
+    """Directory of ``destination`` relative to ``root`` when it is spelled through an alias of an ancestor of ``root``.
+
+    The only tolerated alias is a symlinked *ancestor* of the snapshot root
+    (``/tmp`` for ``/private/tmp/repo``): the destination must spell out the
+    root's own trailing components after that alias, and the alias must
+    resolve to the same ancestor. A symlink that merely points into the
+    repository (``/outside/link`` -> ``<root>/apps/web``), or at the root
+    itself, is not accepted. Components below the root are still checked for
+    symlinks by the caller.
+    """
+    real = root.resolve(strict=False)
+    for split in range(1, len(real.parts)):
+        head, tail = real.parts[:split], real.parts[split:]
+        for start in range(1, len(destination.parts) - len(tail) + 1):
+            if destination.parts[start:start + len(tail)] != tail:
+                continue
+            if Path(*destination.parts[:start]).resolve(strict=False) == Path(*head):
+                return Path(*destination.parts[start + len(tail):])
+    return None
 
 
 def _runner_context(command: str, cwd: str, root: Path | None, *, check_paths: bool) -> tuple[list[str], Path | None]:
@@ -169,13 +195,11 @@ def _runner_context(command: str, cwd: str, root: Path | None, *, check_paths: b
         try:
             runner_relative = resolved.relative_to(root)
         except ValueError:
-            # macOS /tmp is a symlink of /private/tmp. A resolved snapshot root
-            # and an unresolved absolute cd target are the same directory.
-            if not path.is_absolute():
-                return rejected
-            try:
-                runner_relative = path.resolve(strict=False).relative_to(root.resolve(strict=False))
-            except ValueError:
+            # macOS /tmp is a symlink of /private/tmp: a snapshot root recorded
+            # as the resolved path and a cd target spelled through the symlink
+            # (or the reverse) are the same directory.
+            runner_relative = _root_alias_relative(path, root) if path.is_absolute() else None
+            if runner_relative is None:
                 return rejected
         if check_paths and resolved != initial:
             if root.is_symlink() or not root.is_dir():
@@ -326,19 +350,75 @@ def _wrapper_retargets(words: list[str]) -> bool:
     return False
 
 
-def _unwrap_wrapper(words: list[str]) -> list[str] | None:
-    if Path(words[0]).name not in _WRAPPERS:
+# Options of `<wrapper> run` that consume a separate value; every other
+# option is a boolean flag (or written --option=value). Directory selectors
+# are not skipped: they retarget the run and make the command unverifiable.
+_WRAPPER_VALUE_OPTIONS = {
+    "uv": {
+        "--with", "--with-editable", "--with-requirements", "--python", "-p", "--env-file", "--extra",
+        "--group", "--no-group", "--only-group", "--package", "--index", "--default-index", "--index-url",
+        "-i", "--extra-index-url", "--find-links", "-f", "--index-strategy", "--keyring-provider",
+        "--resolution", "--prerelease", "--exclude-newer", "--link-mode", "--cache-dir", "--config-file",
+        "--constraints", "-c", "--overrides", "--build-constraints", "--refresh-package", "--reinstall-package",
+        "--upgrade-package", "-P", "--no-binary-package", "--no-build-package", "--config-setting", "--color",
+        "--allow-insecure-host",
+    },
+    "hatch": {"--env", "-e", "--include", "-i", "--exclude", "-x"},
+}
+_WRAPPER_RETARGET_OPTIONS = {"--project", "--directory", "--cwd", "--prefix", "-C"}
+
+
+def _unwrap_wrapper(words: list[str], allowed_root: Path | None = None) -> list[str] | None:
+    """Return the command a ``<wrapper> run`` invocation executes, else None.
+
+    Wrapper options after ``run`` (``uv run --frozen --with pytest-xdist
+    pytest ...``) are skipped, including the value of options that take one.
+    Directory selectors, ``..`` and absolute option values outside
+    ``allowed_root`` make the run unverifiable and return None.
+    """
+    wrapper = Path(words[0]).name
+    if wrapper not in _WRAPPERS:
         return words
     args = words[1:]
     while args and args[0] != "run":
         if not args[0].startswith("-"):
             return None
         args = args[1:]
-    if not args or args[0] != "run":
+    if not args:
         return None
     args = args[1:]
-    if args[:1] == ["--"]:
-        args = args[1:]
+    value_options = _WRAPPER_VALUE_OPTIONS.get(wrapper, set())
+    short_value_options = tuple(option for option in value_options if len(option) == 2)
+    module = False
+    while args and args[0].startswith("-") and args[0] != "-":
+        word = args[0]
+        if word == "--":
+            args = args[1:]
+            break
+        option, separator, value = word.partition("=")
+        compact = not word.startswith("--") and len(word) > 2
+        if option in _WRAPPER_RETARGET_OPTIONS or (compact and word.startswith("-C")):
+            return None
+        if wrapper == "uv" and option in {"-m", "--module"} and not separator:
+            module, value, args = True, None, args[1:]
+        elif separator:
+            args = args[1:]
+        elif option in value_options:
+            if len(args) < 2:
+                return None
+            value, args = args[1], args[2:]
+        elif compact and word.startswith(short_value_options):
+            value, args = word[2:], args[1:]
+        else:
+            value, args = None, args[1:]
+        if value:
+            path = Path(value)
+            if ".." in path.parts or (path.is_absolute() and (allowed_root is None or not path.is_relative_to(allowed_root))):
+                return None
+    if wrapper == "hatch" and args and re.fullmatch(r"[A-Za-z0-9_.-]+:[^:\s]+", args[0]):
+        args = [args[0].partition(":")[2], *args[1:]]  # `hatch run test:pytest` selects an environment
+    if module:
+        args = ["python", "-m", *args]
     return args or None
 
 
@@ -389,8 +469,12 @@ def _go_packages(words: list[str]) -> list[Path] | None:
         if token == "--":
             index += 1
             continue
+        if token == "-args":
+            break  # everything after -args belongs to the test binary
         if token.startswith("-"):
             name, separator, _value = token.partition("=")
+            # The flag package takes -flag and --flag; go test also takes -test.flag.
+            name = "-" + name.lstrip("-").removeprefix("test.")
             if separator == "" and name in _GO_VALUE_FLAGS:
                 index += 2
                 continue
@@ -516,7 +600,7 @@ def _test_evidence(items: list, numerator: int, apps: dict, root: Path | None = 
         if Path(words[0]).name in _WRAPPERS:
             if _wrapper_retargets(words) or _runner_retargets(words, root, runner_cwd):
                 continue
-            unwrapped = _unwrap_wrapper(words)
+            unwrapped = _unwrap_wrapper(words, None if root is None else root / runner_cwd)
             if not unwrapped:
                 continue
             words = unwrapped
@@ -567,8 +651,9 @@ def _test_evidence(items: list, numerator: int, apps: dict, root: Path | None = 
             if re.search(r"(?m)^\s*(?:PASS|FAIL)(?:\s|$)|\b\d+\s+(?:tests?\s+)?(?:passed|failed)\b", output):
                 continue
         elif executable == "go":
+            own_flags = words[2:words.index("-args")] if "-args" in words else words[2:]
             if words[1:2] != ["test"] or any(
-                word.partition("=")[0] in {"-c", "-list", "-test.list", "-h", "-n"} for word in words[2:]
+                word.partition("=")[0] in {"-c", "-list", "-test.list", "-h", "-n"} for word in own_flags
             ):
                 continue
             if re.search(r"\[no tests? (?:to run|files)\]", output, re.I):

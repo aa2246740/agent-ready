@@ -296,11 +296,13 @@ class ConditionEvidenceTests(unittest.TestCase):
                 )
 
     def test_multiline_commented_trigger_cannot_pass(self):
-        for text in ("/*\nschedule\n*/\ncheck_health\n", "<!--\nschedule\n-->\ncheck_health\n"):
-            with self.subTest(text=text):
-                self.write_source("comment-block.txt", text)
+        # Comment syntax follows the cited file type, so the names carry it.
+        for name, text in (("comment-block.js", "/*\nschedule\n*/\ncheck_health\n"),
+                           ("comment-block.html", "<!--\nschedule\n-->\ncheck_health\n")):
+            with self.subTest(name=name):
+                self.write_source(name, text)
                 records = self.alert()
-                records[1] = self.record("comment-block.txt", "automatic_trigger",
+                records[1] = self.record(name, "automatic_trigger",
                                          kind="schedule", registration="schedule", handler="check_health")
                 self.assertIn("only in a comment", str(condition_errors(self.data, self.target)))
 
@@ -310,12 +312,34 @@ class ConditionEvidenceTests(unittest.TestCase):
         self.sources[name] = text
         (self.target / name).write_text(text)
 
+    def test_valid_triggers_in_real_files_are_accepted_end_to_end(self):
+        (self.target / ".github/workflows").mkdir(parents=True)
+        cases = {
+            ".github/workflows/alert.yml": ('name: alert\non:\n  push:\n    paths: ["src/**"]\n    branches: [manual-release]\n'
+                                            '  schedule:\n    - cron: "*/5 * * * *"\njobs:\n  check_health: {}\n', "schedule"),
+            "crontab": ("* * * * * /usr/bin/run-job check_health\n", "* * * * * /usr/bin/run-job"),
+            "notes.txt": ("# schedule: check_health every five minutes\n", "# schedule"),  # unknown type: no comments
+        }
+        for name, (text, registration) in cases.items():
+            with self.subTest(name=name):
+                self.write_source(name, text)
+                records = self.alert()
+                records[1] = self.record(name, "automatic_trigger", kind="schedule", registration=registration, handler="check_health")
+                records[1]["support"]["quote"] = text.rstrip("\n")
+                self.assertEqual(condition_errors(self.data, self.target), [])
+
+    def test_workflow_dispatch_only_file_is_still_rejected_end_to_end(self):
+        self.write_source("manual.yml", "on:\n  workflow_dispatch:\njobs:\n  check_health: {}\n")
+        records = self.alert()
+        records[1] = self.record("manual.yml", "automatic_trigger", kind="event", registration="workflow_dispatch", handler="check_health")
+        self.assertIn("manual, test-only", str(condition_errors(self.data, self.target)))
+
     def test_automatic_trigger_rejects_comments_and_disabled_blocks(self):
         comment = "# - cron: '0 0 * * *'\ncheck_health\n"
-        self.write_source("comment-registration.txt", comment)
+        self.write_source("comment-registration.yml", comment)
         records = self.alert()
         records[1] = self.record(
-            "comment-registration.txt", "automatic_trigger",
+            "comment-registration.yml", "automatic_trigger",
             kind="schedule", registration="- cron: '0 0 * * *'", handler="check_health",
         )
         self.assertIn("only in a comment", str(condition_errors(self.data, self.target)))
