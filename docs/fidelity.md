@@ -2,7 +2,7 @@
 
 ## 已保留的运行功能
 
-- 三个 skill：agent-readiness、readiness-report、readiness-fix；CLI 提供 catalog、prepare、report、show、fix、score。
+- 三个 skill：agent-readiness、readiness-report、readiness-fix；CLI 提供 catalog、prepare、report、show、fix、score，以及可选的 capture 证据辅助。
 - 84 条规则、9 类、5 个等级；44 条 repository scope、40 条 application scope，30 条可按明确条件跳过。
 - 非跳过条目的 `numerator / denominator` 等权平均；20/40/60/80 为 Level 2–5 下界，规则分类等级不是逐级解锁条件。
 - 完整输入、快照、证据和逐条件校验，本地 JSON/Markdown 报告、修复任务、重评与历史。
@@ -30,6 +30,12 @@
 | 应用级 N/A | 无逐应用 N/A，分母固定为 N | 同原版，无差异 |
 | `actionItems` | 只在汇报文字中给出 | 额外的可选本地字段，仅引用失败条目 |
 | 修复流程 | `/readiness-fix` 的 category → signal 选择 | 保留；`--all`、`--target-level` 与强制复评是本地扩展 |
+| 修复任务体积 | 内嵌完整评估指令；上一份报告不在任务里 | 每个失败项一次原生规则文字加上次 rationale，旧证据只留计数与引用的文件行；无报告分支和重评步骤指向 `prepare` 生成的 assessment.md，而不是内嵌副本。分支与选择语义不变 |
+| `gh`/`glab` 类跳过 | 规则文字写 “not available or not authenticated”；原生代理对已登录但无法访问本仓库的情形多用 `null` | 明确同样适用（无 remote、仓库不存在、无读权限），并要求在 rationale 说明；适用的失败和未评估项不能跳过 |
+| `timeoutSeconds` | 工具的 Execute timeout 字段 | 宿主命令工具实际强制的限制（含默认限制）；没有限制时在真实超时下运行，例如 `capture` |
+| `capture` 辅助 | 无 | 仅本地的可选命令：在目标内运行一条命令并生成/原子追加真实的命令证据（cwd、退出码、前 6000 + 后 3000 字符输出）；从不写目标，校验不使用，也不是信任来源 |
+| `report` 输出 | 工具返回云端结果 | 默认打印简短摘要（等级、分数、通过/失败/跳过、路径），`--json` 输出完整 JSON；退出码不变 |
+| `alerting_configured` 的身份链 | 按模型判断 | 在 alert_rule、automatic_trigger、alert_delivery 之间，标识规范化后相连即可：不区分大小写，模块路径与文件路径视为同一标识（`app.monitor`、`app/monitor`、`app/monitor.py`），`::`、`.`、`/` 等价，并去掉常见源文件扩展名；错误信息会列出找到的规范化标识 |
 
 ## 本地替代与限制
 

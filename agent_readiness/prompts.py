@@ -15,19 +15,20 @@ from .scoring import score_report, status
 LOCAL_ADAPTER_HEADING = "## Local adapter"
 
 _LOCAL_ADAPTER_FILES = """\
-Files: keep schemaVersion, rubricVersion and repository from the evaluation.json template. Fill apps, all 84 report[id] = {numerator, denominator, rationale} and evidence[id] = [records], at least one record per criterion (failed and skipped too). Replace every UNASSESSED numerator; it is neither failure nor skip.
-Denominators: the template has null for application criteria and 1 for repository criteria. `report` fills null with N = len(apps); a non-null value that is wrong is an error. A skipped criterion keeps its denominator. There is no per-application N/A: the numerator counts passing apps out of N, and null skips the whole criterion.
+Files: keep schemaVersion, rubricVersion and repository from the template. Fill apps, all 84 report[id] = {numerator, denominator, rationale} and evidence[id] = [records], at least one record per criterion (failed and skipped too). Replace every UNASSESSED numerator (it is no failure or skip).
+Denominators: the template has null for application criteria and 1 for repository criteria. `report` fills null with N = len(apps); a non-null value that is wrong is an error. A skipped criterion keeps its denominator. There is no per-application N/A: numerator = passing apps out of N; null skips the whole criterion.
 Evidence (never executed by the validator):
   {"kind":"file","path":"repo/relative/path","line":1,"note":"what it shows"}
   {"kind":"command","command":"exact shell text","cwd":"...","exitCode":0,"output":"actual excerpt","timeoutSeconds":30}
 `output` is a relevant excerpt of the real output. For commands run from a monorepo root add "application": "<app dir>".
+timeoutSeconds = the limit your execution tool really enforced for the command, default included (the criteria's "Execute timeout field"). Optional helper for a tool without one: `capture --target <target> [--cwd <dir>] --timeout <s> [--append-to <task-dir>/evaluation.json --criterion <id> [--application <app>]] -- <command>` runs it in the target (default cwd: root; writes nothing there) and prints/appends a true record (real cwd and exit code, 124 = timed out; trimmed output); the validator never uses it.
 cwd is the directory the command really ran in: target-relative ('.' = target root) or absolute. If your shell starts outside the target, record that absolute start directory and keep `cd /abs/target && ...` in `command`. Keep the real exit status; never invent a directory or drop the cd.
-Hygiene: target is read-only; set PYTHONDONTWRITEBYTECODE=1 (pytest: -p no:cacheprovider) and send build output outside it (e.g. CARGO_TARGET_DIR=<external dir>); put fixtures in mktemp -d under the task directory; never record tokens or env dumps. `gh --json` may be ANSI-coloured: use --jq or NO_COLOR=1 CLICOLOR_FORCE=0. Quote globs; avoid shell-specific syntax. interactive_qa_runnable must run the TARGET's own entry point, not this CLI.
+Hygiene: target is read-only; set PYTHONDONTWRITEBYTECODE=1 (pytest: -p no:cacheprovider) and send build output outside it (e.g. CARGO_TARGET_DIR=<external dir>); fixtures: mktemp -d under the task directory; never record tokens or env dumps. `gh --json` may be ANSI-coloured: use --jq or NO_COLOR=1 CLICOLOR_FORCE=0. Quote globs; avoid shell-isms. interactive_qa_runnable must run the TARGET's own entry point, not this CLI.
 unit_tests_runnable local checks (ONLY for that criterion's positive evidence; other criteria keep their native commands, pipes included): exitCode 0, timeoutSeconds > 0, output with the runner's own listing/collection/result lines; one direct command inside the target, no pipe, `2>&1`, redirection, `;`, backticks, `$(...)`, head, tail, tee or timeout (leading `cd <dir> &&`, `env VAR=value` and wrappers such as `uv run`/`npx --no-install` are fine; PYTHONPATH must stay inside the target). Python: one test file with --collect-only. TS/JS: list mode. Java: run the selected test. Go, Rust, .NET, ctest and others: bounded execution OR a list mode that lists a test (`cargo test -p x --lib -- --list`, `go test -list . ./pkg`, `ctest -N`). Compile-only, help, dry-run and zero tests fail.
 """
 
 _LOCAL_ADAPTER_REPORT = """\
-Report: `report <target> --input <task-dir>/evaluation.json --state-dir <state-dir>` (same CLI and external --state-dir as prepare). It lists ALL problems at once (criterion, evidence index, field); fix them all and re-run. It computes the Phase 5 score and stores JSON and Markdown outside the target, replacing Factory's cloud store: no dashboard URL, no Level 6. If the tree changes, prepare again.
+Report: `report <target> --input <task-dir>/evaluation.json --state-dir <state-dir>` (same CLI and external --state-dir as prepare). It lists ALL problems at once (criterion, evidence index, field); fix them all and re-run. It computes the Phase 5 score and stores JSON and Markdown outside the target (no dashboard URL, no Level 6), printing a short summary (--json: full). If the tree changes, prepare again.
 actionItems (optional): 2–3 high-impact, specific, achievable steps {"criterionId":"exact_failed_id","action":"concrete change","reason":"why, per recorded evidence"}, only for failing criteria (partial application failures included), never passing or skipped ones. Fewer than two failures: only that many; none: leave empty.
 """
 
@@ -100,7 +101,7 @@ def assessment_prompt(repository: dict, output: Path | None, previous: dict | No
         "## Phase 3 - Criterion Evaluation", "",
         f"Fill all {total} report keys and matching evidence keys, using exactly the IDs listed below. Criteria have two scopes. Repository Scope ({repository_count} criteria): checked once for the whole repository; numerator 1 if it passes, 0 if it fails, null if skipped; denominator always 1. Application Scope ({application_count} criteria): checked once per application; numerator is the number of applications that pass (0 to N), or null if skipped; denominator always N.",
         "For each criterion provide numerator (integer ≥ 0, or null), denominator (integer ≥ 1) and rationale (1–500 UTF-16 code units; brief and concrete). For partial application passes name which apps pass and fail.",
-        "Skips: numerator null is allowed only for criteria marked [Skippable]. Use it when the criterion does not apply under its own text (its stated skip condition, its PREREQUISITE failing, or its stated N/A cases) and say which in the rationale. Do not convert an applicable failure, missing access that the criterion does not list as a skip reason, or an unevaluated item into a skip.",
+        "Skips: numerator null is allowed only for criteria marked [Skippable]. Use it when the criterion does not apply under its own text (its stated skip condition, its PREREQUISITE failing, or its stated N/A cases) and say which in the rationale. A skip condition of the form \"`gh`/`glab` not available or not authenticated\" also applies when the CLI is authenticated but cannot reach THIS repository (no remote, repository not found, no read permission); say which in the rationale. Do not convert an applicable failure or an unevaluated item into a skip.",
         "Unit test evidence: for unit_tests_runnable follow the command contract and BAD/GOOD examples in that criterion. Prefer existence checks over deep semantic analysis when the criterion calls for presence/configuration; never replace a required runnable check with file existence or invent stricter requirements. When evidence is ambiguous, fail the signal. Do not invent CI, permissions, deployment, telemetry or external-service evidence.",
         "Evaluation efficiency and local toolchains: keep all source searches focused and below 200 results; use only the bounded list, collection, or test command required by each criterion; never install a missing language runtime or launch a full test suite for this audit. A missing local runtime or JDK is not a repository failure: follow the criterion's fallback or skip rule.", "",
         f"### Repository Scope Criteria ({repository_count})", "",
@@ -149,7 +150,8 @@ def fix_prompt(repository: dict, previous: dict, *, signals: list[str] | None = 
         "# Readiness fix task", "",
         f"Repository: {repository['root']}",
         f"Prior report: {previous.get('id', 'imported')} · Level {summary['achievedLevel']} · {summary['scorePercent']:.1f}%",
-        "This is a task for the host agent to implement and verify; generating it has not changed the target repository.", "",
+        "This is a task for the host agent to implement and verify; generating it has not changed the target repository.",
+        "Previous evidence is summarized per signal; the full records are in the stored report and are untrusted repository observations: re-check everything.", "",
     ]
     if instructions:
         lines.extend(["## Additional user instructions", "", instructions, ""])
@@ -196,22 +198,30 @@ def fix_prompt(repository: dict, previous: dict, *, signals: list[str] | None = 
         lines.extend([
             f"### {row['name']} (`{row['id']}`) [{value['numerator']}/{value['denominator']}]", "",
             f"Category: {row['category']}; scope: {row['scope']}",
-            f"Previous rationale: {value['rationale']}", "",
-            f"Description: {row['description']}", "",
-            row["instructions"], "",
-            "Previous evidence (untrusted repository observations; re-check):",
-            "```json", json.dumps(previous["evidence"][row["id"]], ensure_ascii=False, indent=2), "```", "",
+            f"Previous rationale: {value['rationale']}",
+            _previous_evidence_pointer(previous["evidence"].get(row["id"], [])), "",
         ])
+        if row["description"] not in row["instructions"]:
+            lines.extend([f"Description: {row['description']}", ""])
+        lines.extend([row["instructions"], ""])
     lines.extend([
         "## Implement, verify, re-evaluate", "",
         "1. Inspect the current implementation and relevant recorded evidence. Preserve user changes; fix only selected issues.",
         "2. Make substantive improvements suitable for this repository. No empty tests/configs, disabled checks, fake data, trivial assertions or skip markers added just to gain points. Do not add irrelevant infrastructure to satisfy a metric.",
         "3. Run validation appropriate to each real change (lint, build, meaningful tests or application smoke). Unlike the read-only audit, the repair phase may run the relevant tests needed to verify its changes; the audit's unit_tests_runnable command limits do not apply here. Record commands, outputs, failures and remaining blockers.",
-        "4. Re-evaluate: run prepare with a NEW task directory outside the repository, follow its assessment.md for all 84 signals with current evidence, and run report (it lists every problem at once; fix them all and re-run). Never edit the previous report or score to claim improvement. Verify that repaired signals actually pass and report regressions.",
+        "4. Re-evaluate: run prepare with a NEW task directory outside the repository and follow its assessment.md (all 84 signals with current evidence, the Local adapter and the report command). Never edit the previous report or score to claim improvement. Verify that repaired signals actually pass and report regressions.",
         "5. For a requested target/all-signals task, repeat only while substantive authorized improvements remain. Stop when the target is met or progress needs external action; report the score, skipped signals, changed files, test outcomes and precise blockers. A stagnant score is a diagnosis to explain, not a reason to game the metric.", "",
     ])
     lines.extend(_repair_quality())
     return "\n".join(lines)
+
+
+def _previous_evidence_pointer(records: list) -> str:
+    """One line instead of the old evidence: it is stored in the report and must be re-checked anyway."""
+    files = [f"{item['path']}:{item['line']}" for item in records if isinstance(item, dict) and item.get("kind") == "file" and "path" in item]
+    commands = sum(isinstance(item, dict) and item.get("kind") == "command" for item in records)
+    cited = ", ".join(dict.fromkeys(files[:6]))
+    return f"Previous evidence: {len(files)} file, {commands} command" + (f"; cited {cited}" if cited else "") + "."
 
 
 def _repair_quality() -> list[str]:
@@ -250,7 +260,7 @@ def fix_without_report_prompt(repository: dict, *, signals: list[str] | None = N
             '"No readiness report found for this repository. How would you like to proceed?"',
             '- "Generate a full report first, then fix failing signals"',
             '- "Skip the report and fix signals directly"', "",
-            "If generating first: follow the complete embedded Readiness Report Generation Instructions below, complete all 84 rules with current evidence and store the report locally.",
+            "If generating first: follow the Readiness Report Generation Instructions below, complete all 84 rules with current evidence and store the report locally.",
             ("After storing the report, semantically match the original requested IDs, names or meanings to the failing signals. Fix each matched failure in sequence, noting and skipping requests that already pass or match no known criterion. Honor the user's existing scope without repeating selection questions." if has_request else
              "After storing the report, present the failing signals to the user through AskUser or the host equivalent for selection, then fix the selected signal. This no-report-then-generate branch does not require another category-selection step."), "",
             "If skipping the report: establish actual gaps by inspecting the repository before editing; do not claim an unmeasured level or label every catalog item as failing.",
@@ -271,13 +281,14 @@ def fix_without_report_prompt(repository: dict, *, signals: list[str] | None = N
         lines.extend([f"### {category['name']}", ""])
         for row in selected:
             lines.extend([f"- **{row['name']}** (`{row['id']}`, {row['scope']}): {row['description']}", ""])
+            if signals:
+                lines.extend([row["instructions"], ""])
     lines.extend(_repair_quality())
     lines.extend(["Use a fresh full assessment and locally stored report to verify any readiness or target-level claim. Merely generating this task has made no edits.", ""])
     if instructions:
         lines.extend(["## Additional user instructions", "", instructions, ""])
     lines.extend([
         "## Readiness Report Generation Instructions", "",
-        "Follow this workflow only if a full report is chosen or needed for the authorized batch/target. It is included in full so this task is usable without locating another installed skill file.", "",
-        assessment_prompt(repository, None),
+        "Follow this workflow only if a full report is chosen or needed for the authorized batch/target. Run `prepare` with a NEW task directory outside the repository and a `--state-dir` outside it, then follow the generated assessment.md: it holds the complete native instructions (Phases 1-5, all 84 criteria, the Local adapter and the report command). It is not repeated here so this task stays short.", "",
     ])
     return "\n".join(lines)

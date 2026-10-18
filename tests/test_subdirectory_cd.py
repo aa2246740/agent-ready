@@ -148,7 +148,7 @@ class SubdirectoryCdTests(unittest.TestCase):
         evaluation["evidence"]["unit_tests_runnable"] = [item]
         source = self.base / "evaluation.json"
         source.write_text(json.dumps(evaluation))
-        self.cli("report", self.root, "--input", source, "--state-dir", self.state)
+        self.cli("report", self.root, "--input", source, "--state-dir", self.state, "--json")
         before = self.cli("show", self.root, "--state-dir", self.state, "--json")
         moved = self.base / "relocated"
         shutil.copytree(self.root, moved)
