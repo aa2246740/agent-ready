@@ -11,8 +11,14 @@ import re
 import unittest
 
 from agent_readiness.catalog import load_catalog
-from agent_readiness.prompts import assessment_prompt, fix_prompt, fix_without_report_prompt
+from agent_readiness.condition_evidence import INSTRUCTIONS as CONDITION_INSTRUCTIONS
+from agent_readiness.prompts import (
+    LOCAL_ADAPTER_HEADING, assessment_prompt, fix_prompt, fix_without_report_prompt,
+)
 from agent_readiness.report import ReportError
+
+
+SKILLS = Path(__file__).resolve().parents[1] / "skills"
 
 
 class PromptContractTests(unittest.TestCase):
@@ -42,36 +48,165 @@ class PromptContractTests(unittest.TestCase):
     def assessment(self, previous=None):
         return assessment_prompt(self.repository, Path("/synthetic/outside-task"), previous)
 
+    def adapter(self, prompt=None):
+        prompt = prompt or self.assessment()
+        return prompt[prompt.index(LOCAL_ADAPTER_HEADING):]
+
     def test_assessment_preserves_scan_and_application_discovery_decisions(self):
         # Original lines 84–183: bounded source discovery and applications first.
         prompt = self.assessment()
         for expected in (
-            "Record the primary languages", "Ruby", "Gemfile", "Cargo.toml", "go.mod",
+            "Detect the repository language", "Ruby", "Gemfile", "Cargo.toml", "go.mod",
             "below 200", "BEFORE focused source searches", "unbounded **/*.java",
             "EVERY criterion", "end users or other systems", "moved to its own repository",
             "independent run OR deployment", "alternate root build frontends",
             "count '.' as one application", "APPLICATIONS_IDENTIFIED: N",
-            "denominators are 1", "denominators are N",
+            "denominator N", "denominator 1",
         ):
             with self.subTest(requirement=expected):
                 self.assertIn(expected, prompt)
-        self.assertLess(prompt.index("APPLICATIONS_IDENTIFIED: N"), prompt.index("## Native criteria"))
+        self.assertLess(prompt.index("APPLICATIONS_IDENTIFIED: N"), prompt.index("## Phase 3 - Criterion Evaluation"))
         self.assertIn("CURRENT working tree", prompt)  # Explicit local adaptation, no checkout.
+
+    def test_assessment_follows_native_phase_order_with_one_local_adapter_section(self):
+        prompt = self.assessment()
+        headings = [
+            "## Phase 1 - Repository Scan", "## Phase 2 - Application Discovery",
+            "## Phase 3 - Criterion Evaluation", "## Phase 4 - Report Validation",
+            "## Phase 5 - Scoring & Report Generation", "## Behavioral Guidelines", LOCAL_ADAPTER_HEADING,
+        ]
+        positions = [prompt.index(heading) for heading in headings]
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(prompt.count(LOCAL_ADAPTER_HEADING), 1)
+        self.assertIn("Local adapter", prompt[:positions[0]])  # Pointer before the phases.
+        self.assertEqual(prompt.count(CONDITION_INSTRUCTIONS), 1)
+        self.assertIn(CONDITION_INSTRUCTIONS, self.adapter())
+
+    def test_all_84_criteria_are_emitted_verbatim_grouped_by_scope(self):
+        prompt = self.assessment()
+        rows = re.findall(r"^- \*\*([a-z_]+)\*\* \(Level (\d)\)( \[Skippable\])?: ", prompt, re.MULTILINE)
+        self.assertEqual(len(rows), 84)
+        self.assertEqual({row[0] for row in rows}, {row["id"] for row in self.catalog["criteria"]})
+        repository_ids = [row["id"] for row in self.catalog["criteria"] if row["scope"] == "repository"]
+        application_ids = [row["id"] for row in self.catalog["criteria"] if row["scope"] == "application"]
+        self.assertEqual((len(repository_ids), len(application_ids)), (44, 40))
+        listed = [row[0] for row in rows]
+        self.assertEqual(sorted(listed[:44]), sorted(repository_ids))
+        self.assertEqual(sorted(listed[44:]), sorted(application_ids))
+        by_id = {row["id"]: row for row in self.catalog["criteria"]}
+        for key, level, skippable in rows:
+            self.assertEqual(level, str(by_id[key]["level"]), key)
+            self.assertEqual(bool(skippable), bool(by_id[key].get("isSkippable")), key)
+        for criterion in self.catalog["criteria"]:
+            with self.subTest(criterion=criterion["id"]):
+                self.assertIn(f"**{criterion['id']}** (Level {criterion['level']})", prompt)
+                self.assertIn(criterion["instructions"], prompt)
+
+    def test_repository_and_application_counts_come_from_the_catalog(self):
+        prompt = self.assessment()
+        for expected in (
+            "Repository Scope (44 criteria)", "Application Scope (40 criteria)",
+            "### Repository Scope Criteria (44)", "### Application Scope Criteria (40)",
+            "every one of the 40 Application Scope criteria uses denominator N",
+            "every one of the 44 Repository Scope criteria uses denominator 1",
+            "Fill all 84 report keys", "exactly 84 criterion keys",
+        ):
+            self.assertIn(expected, prompt)
+
+    def test_skip_wording_follows_native_semantics_without_extra_discouragement(self):
+        prompt = self.assessment()
+        for expected in (
+            "numerator null is allowed only for criteria marked [Skippable]",
+            "its stated skip condition, its PREREQUISITE failing, or its stated N/A cases",
+            "say which in the rationale",
+            "Do not convert an applicable failure, missing access that the criterion does not list as a skip reason, or an unevaluated item into a skip",
+            "There is no per-application N/A",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, prompt)
+        for discouragement in ("UNASSESSED is a deliberate invalid sentinel", "rarely", "avoid skipping", "prefer failing"):
+            self.assertNotIn(discouragement, prompt)
+
+    def test_command_bans_apply_only_to_unit_tests_runnable_evidence(self):
+        adapter = self.adapter()
+        paragraph = next(line for line in adapter.splitlines() if line.startswith("unit_tests_runnable local checks"))
+        self.assertIn("ONLY for that criterion's positive evidence", paragraph)
+        self.assertIn("other criteria keep their native commands, pipes included", paragraph)
+        for expected in ("no pipe", "`2>&1`", "head", "tail", "tee", "timeoutSeconds > 0", "exitCode 0",
+                         "`cargo test -p x --lib -- --list`", "`go test -list . ./pkg`", "`ctest -N`",
+                         "Compile-only", "PYTHONPATH must stay inside the target", "`uv run`"):
+            self.assertIn(expected, paragraph)
+        # The bans are not repeated as a global rule anywhere else in the local adapter.
+        rest = adapter.replace(paragraph, "")
+        for banned in ("`2>&1`", "head", "tee"):
+            self.assertNotIn(banned, rest)
+
+    def test_v2_cwd_rule_accepts_real_directories_and_keeps_the_cd(self):
+        adapter = self.adapter()
+        for expected in (
+            "cwd is the directory the command really ran in",
+            "target-relative ('.' = target root) or absolute",
+            "record that absolute start directory and keep `cd /abs/target && ...` in `command`",
+            "never invent a directory or drop the cd",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, adapter)
+        prompt = self.assessment()
+        for stale in ("Never relabel", "initial working directory", "cannot represent", "schema limitation"):
+            self.assertNotIn(stale, prompt)
+
+    def test_local_adapter_covers_template_denominators_hygiene_and_report(self):
+        adapter = self.adapter()
+        for expected in (
+            "evidence[id] = [records]", "at least one record per criterion", "UNASSESSED",
+            "`report` fills null with N = len(apps)", "a non-null value that is wrong is an error",
+            "A skipped criterion keeps its denominator",
+            '"application": "<app dir>"',
+            "PYTHONDONTWRITEBYTECODE=1", "-p no:cacheprovider", "CARGO_TARGET_DIR", "mktemp -d",
+            "never record tokens or env dumps", "--jq", "NO_COLOR=1 CLICOLOR_FORCE=0", "Quote globs",
+            "TARGET's own entry point", "It lists ALL problems at once", "fix them all and re-run",
+            "--state-dir", "outside the target", "no dashboard URL, no Level 6", "prepare again",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, adapter)
+        self.assertNotIn("echo =====", self.assessment())
+
+    def test_size_budgets_keep_instructions_short(self):
+        prompt = self.assessment()
+        adapter = self.adapter(prompt)
+        own_local_text = adapter.replace(CONDITION_INSTRUCTIONS, "")
+        self.assertLessEqual(len(own_local_text.encode()), 3800, "local adapter prose outside the condition block")
+        self.assertLessEqual(len(adapter.encode()), 3800 + len(CONDITION_INSTRUCTIONS.encode()))
+        self.assertLessEqual(len(prompt.encode()), 64 * 1024)
+        for name, limit in (("agent-readiness", 2560), ("readiness-report", 4096), ("readiness-fix", 4096)):
+            with self.subTest(skill=name):
+                self.assertLessEqual(len((SKILLS / name / "SKILL.md").read_bytes()), limit)
+
+    def test_skills_are_short_routers_pointing_to_the_generated_assessment(self):
+        for name in ("agent-readiness", "readiness-report", "readiness-fix"):
+            text = (SKILLS / name / "SKILL.md").read_text(encoding="utf-8")
+            with self.subTest(skill=name):
+                self.assertTrue(text.startswith(f"---\nname: {name}\ndescription: "))
+                self.assertIn("READINESS_CLI", text)
+                self.assertNotIn("echo =====", text)
+                for stale in ("never relabel", "Never relabel", "不能把字段改成 `.`"):
+                    self.assertNotIn(stale, text)
+        report = (SKILLS / "readiness-report" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("assessment.md", report)
+        self.assertIn("Local adapter", report)
+        self.assertIn("一次列出全部问题", report)
+        self.assertNotIn("timeout", report)  # The unit-test command bans live in assessment.md only.
 
     def test_assessment_contains_every_original_rule_without_replacing_its_contract(self):
         prompt = self.assessment()
-        headings = re.findall(r"^#### ([a-z_]+) —", prompt, re.MULTILINE)
-        self.assertEqual(set(headings), {row["id"] for row in self.catalog["criteria"]})
-        self.assertEqual(len(headings), 84)
-        for criterion in self.catalog["criteria"]:
-            with self.subTest(criterion=criterion["id"]):
-                self.assertIn(criterion["instructions"], prompt)
         for expected in (
             "Prefer existence checks over deep semantic analysis",
             "bounded list, collection, or test command required by each criterion",
-            "Re-read each unit_tests_runnable command and its output",
+            "re-read each unit_tests_runnable command and its output",
             "STOP and revise before publishing", "exact signal-weighted mean",
             "# Level", "# Applications", "# Criteria", "# Action Items",
+            "There is no Level 6", "replacing Factory's cloud store",
+            "Level 1: 0–20%, Level 2: 20–40%, Level 3: 40–60%, Level 4: 60–80%, Level 5: 80–100%",
         ):
             self.assertIn(expected, prompt)
 
@@ -91,21 +226,21 @@ class PromptContractTests(unittest.TestCase):
             "list only criteria or applications that changed; omit unchanged items",
         ):
             self.assertIn(expected, prompt)
+        self.assertLess(prompt.index("## Previous Report Reference"), prompt.index("## Phase 1 - Repository Scan"))
         self.assertEqual(self.previous, original)
         self.assertEqual(prompt, self.assessment(self.previous))
+        self.assertNotIn("Previous Report Reference", self.assessment())
 
     def test_agent_action_items_are_specific_evidence_grounded_local_extensions(self):
         # Native lN lines 292–305 requires 2–3 specific, achievable next steps.
-        prompt = self.assessment()
-        self.assertIn("optional local actionItems field", prompt)
-        self.assertIn("2–3 high-impact, specific, achievable", prompt)
+        adapter = self.adapter()
+        self.assertIn("actionItems (optional)", adapter)
+        self.assertIn("2–3 high-impact, specific, achievable", adapter)
         for field in ('"criterionId"', '"action"', '"reason"'):
-            self.assertIn(field, prompt)
-        self.assertIn("only failing criteria, including partial application failures", prompt)
-        self.assertIn("never passing or skipped criteria", prompt)
-        self.assertIn("If fewer than two signals fail, provide only that many", prompt)
-        self.assertIn("if none fail, leave actionItems empty", prompt)
-        self.assertIn("Do not merely repeat the criterion description", prompt)
+            self.assertIn(field, adapter)
+        self.assertIn("only for failing criteria (partial application failures included)", adapter)
+        self.assertIn("never passing or skipped ones", adapter)
+        self.assertIn("Fewer than two failures: only that many; none: leave empty", adapter)
 
     def test_existing_report_default_selection_has_names_scores_and_only_failing_categories(self):
         # Original oZ report/no-userArgs branch, lines 504–521.
