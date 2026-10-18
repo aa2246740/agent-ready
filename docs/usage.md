@@ -15,7 +15,7 @@ python3 scripts/readiness.py prepare /path/to/project \
   --output /tmp/project-audit-1 --state-dir /tmp/project-reports
 ```
 
-然后由 agent 阅读输出的 `assessment.md`、`snapshot.json` 和 `evaluation.json`，发现独立应用，依据完整规则完成全部 84 项和证据。初始 `UNASSESSED` 不能提交。完成后运行：
+然后由 agent 阅读输出的 `assessment.md`（唯一依据，按原生 Phase 1–5 组织，末尾 “Local adapter” 说明本地字段）、`snapshot.json` 和 `evaluation.json`，发现独立应用，完成全部 84 项和证据。初始 `UNASSESSED` 不能提交。完成后运行：
 
 ```sh
 python3 scripts/readiness.py report /path/to/project \
@@ -24,7 +24,16 @@ python3 scripts/readiness.py show /path/to/project --state-dir /tmp/project-repo
 python3 scripts/readiness.py show /path/to/project --state-dir /tmp/project-reports --json
 ```
 
-正式报告校验仓库身份、HEAD、工作区内容指纹、应用目录、84 个精确规则键、分母、分子、允许跳过条件及证据。目标变化后须重新 prepare；不能改快照字段来掩盖变化。
+正式报告校验仓库身份、HEAD、工作区内容指纹、应用目录、84 个精确规则键、分母、分子、允许跳过条件及证据。`report` 一次列出全部问题（规则、证据序号、字段）和总数，全部修正后重跑即可。目标变化后须重新 prepare；不能改快照字段来掩盖变化。
+
+### 填写要点
+
+- **分母**：模板中应用级条目的分母为 `null`，`report` 按应用数 N 补齐；仓库级为 1。手写的非空分母必须正确。跳过的条目（分子 `null`）分母同样补成 N。
+- **应用级 N/A**：与原版一致，分子是通过的应用数，分母固定为 N，没有逐应用 N/A；`null` 只能整条跳过，且仅用于标有 `[Skippable]`、按其自身文字不适用的条目。
+- **命令证据的 `cwd`**：填命令实际运行的目录，目标相对路径（`.` 为目标根）或绝对路径均可。宿主 shell 从目标之外启动时，记录那个绝对目录，并在 `command` 里保留 `cd /abs/target && ...`。
+- **输出**：`output` 是真实输出的相关摘录；`unit_tests_runnable` 需包含 runner 自己的列出、收集或结果行。该条的命令限制（不用管道、`2>&1`、`head` 等）只适用于它自己的通过证据，`documentation_freshness` 等规则照常记录原生命令。
+- **环境**：把构建输出放到目标之外（如 `CARGO_TARGET_DIR`），设置 `PYTHONDONTWRITEBYTECODE=1`，保持目标只读。`gh --json` 输出被着色时用 `--jq` 或 `NO_COLOR=1 CLICOLOR_FORCE=0`。
+- 与原版的差异见[范围与限制](fidelity.md)。
 
 ## 修复与重评
 

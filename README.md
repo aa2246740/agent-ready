@@ -47,9 +47,9 @@ python3 scripts/readiness.py fix /path/to/project \
   --signals lint_config --state-dir /tmp/readiness-state
 ```
 
-`fix` 生成任务，实际修改和验证由 agent 完成。重评使用新的目标外任务目录，追加历史，不覆盖旧结论。
+`report` 一次列出全部问题，修正后重跑。`fix` 生成任务，实际修改和验证由 agent 完成。重评使用新的目标外任务目录，追加历史，不覆盖旧结论。
 
-使用细节见[运行与历史](docs/usage.md)、[模型接入](docs/byok.md)、[证据要求](docs/condition-evidence.md)、[范围与限制](docs/fidelity.md)。规则文件名为 `rules.json`；原有规则和报告版本标识保留，以兼容既有输入。
+使用细节见[运行与历史](docs/usage.md)、[模型接入](docs/byok.md)、[证据要求](docs/condition-evidence.md)、[本地实现与原版的差异](docs/fidelity.md)。规则文件名为 `rules.json`；原有规则和报告版本标识保留，以兼容既有输入。
 
 ## 开发与来源
 
