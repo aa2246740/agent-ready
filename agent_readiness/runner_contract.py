@@ -4,6 +4,7 @@ These checks never execute commands and do not authenticate captured output or
 prove arbitrary package scripts behave as described by their evaluator.
 """
 
+import json
 from pathlib import Path
 import re
 import shlex
@@ -200,3 +201,71 @@ def java_test_execution(words: list[str], output: str) -> bool:
     if re.search(r"(?m)^\s*(?:\[(?:INFO|ERROR)\]\s*)?BUILD FAILURE\b", output):
         return False
     return any(int(run) > int(skipped) for run, _, _, skipped in counts)
+
+
+def other_runner_error(words: list[str], output: str) -> str | None:
+    """Require native listing/result lines, never a build or success banner alone."""
+    executable = Path(words[0]).name
+    args = words[1:]
+    if executable == "bundle" and args[:1] == ["exec"]:
+        return other_runner_error(args[1:], output) if len(args) > 1 else "bundle exec needs a test runner"
+    if executable in {"cargo", "dotnet", "mix", "zig", "swift", "flutter", "dart", "deno"}:
+        if args[:1] != ["test"]:
+            return f"{executable} command does not run tests; use its test subcommand"
+        args = args[1:]
+    elif executable not in {"ctest", "ruby", "rspec", "phpunit", "rake", "mocha", "ava", "tap"}:
+        return f"unrecognized test runner {executable}; cite a supported native runner"
+    options = {word.partition("=")[0] for word in args}
+    if options & {"--no-run", "--dry-run", "--help", "--version", "-h", "--list-targets", "--help-command"}:
+        return "compile-only, dry-run, help or version mode does not list or execute tests; use a native test list or bounded execution"
+    if executable == "cargo":
+        listing = "--" in args and "--list" in args[args.index("--") + 1:]
+        if listing:
+            return None if re.search(r"(?m)^\s*\S[^\n]*:\s*test\s*$", output) else "cargo -- --list output must enumerate at least one test"
+        cargo_args = args[:args.index("--")] if "--" in args else args
+        value_flags = {"-p", "--package", "--manifest-path", "--test", "--bin", "--example", "--features", "--target", "--target-dir", "--profile", "--jobs", "-j", "--color", "--config"}
+        positional, index = [], 0
+        while index < len(cargo_args):
+            word = cargo_args[index]
+            if word in value_flags:
+                index += 2
+                continue
+            if not word.startswith("-"):
+                positional.append(word)
+            index += 1
+        scoped = bool(positional) or bool(options & {"-p", "--package", "--test", "--lib", "--bin"})
+        if not scoped:
+            return "cargo test without -- --list, a test filter or a crate/library selector runs the full suite; select a bounded target"
+        return None if re.search(r"test result:\s*ok\.\s*[1-9]\d* passed", output, re.I) else "cargo output must report at least one passing test"
+    if executable == "ctest":
+        if options & {"-N", "--show-only"}:
+            listed = re.search(r"(?m)^\s*Test\s+#\d+:\s*\S", output)
+            try:
+                document = json.loads(output)
+            except ValueError:
+                document = None
+            if isinstance(document, dict) and isinstance(document.get("tests"), list):
+                listed = any(isinstance(test, dict) and isinstance(test.get("name"), str) and test["name"].strip() for test in document["tests"])
+            return None if listed else "ctest list output must enumerate at least one test"
+        if not options & {"-R", "--tests-regex", "-I", "--tests-information"}:
+            return "ctest execution needs a test selector; use -R <test> or -N to list"
+        return None if re.search(r"[1-9]\d* tests? passed|100% tests passed, 0 tests failed out of [1-9]\d*", output, re.I) else "ctest output must report at least one passing test"
+    if executable == "dotnet":
+        if "--list-tests" in options or "-t" in options:
+            listed = re.search(r"(?im)^The following Tests are available:\s*\n(?:[ \t]*\n)*[ \t]+\S", output)
+            return None if listed else "dotnet --list-tests output must enumerate at least one test"
+        if "--filter" not in options and not any(word.endswith((".csproj", ".fsproj", ".vbproj")) for word in args):
+            return "dotnet test needs a project or test filter; use --filter or --list-tests"
+        return None if re.search(r"Passed:\s*[1-9]\d*|Passed!.*Total:\s*[1-9]\d*", output, re.I) else "dotnet output must report at least one passing test"
+    if executable == "phpunit" and options & {"--list-tests", "--list-tests-xml"}:
+        return None if re.search(r"(?m)^\s*-\s+\S|<testCase\b", output) else "phpunit listing must enumerate at least one test"
+    if executable in {"swift", "dart", "flutter", "deno", "mocha", "ava", "tap"} and options & {"--list-tests", "--list"}:
+        return None if re.search(r"(?m)^\s*\S+(?:::|/| > )\S+", output) else f"{executable} listing must enumerate at least one test"
+    if executable == "rake" and (options & {"-T", "--tasks", "-D", "--describe", "-P", "--prereqs", "-n"} or not any(word == "test" or word.startswith("test:") for word in args)):
+        return "rake must execute a bounded test task; task listing/dry runs are not test evidence"
+    selected = any(not word.startswith("-") and ("/" in word or word.endswith((".rb", ".php", ".exs", ".dart", ".ts", ".js", ".zig")) or word.startswith("TEST=")) for word in args)
+    selected = selected or bool(options & {"--filter", "--name", "--grep", "-e", "--example", "--test-filter"})
+    if not selected:
+        return f"{executable} execution needs a test file or filter; select a bounded target"
+    result = re.search(r"\b[1-9]\d*\s+(?:tests?|examples?|passing|passed|runs)|\bOK\s*\([1-9]\d*\s+tests?\)|\bAll [1-9]\d* tests? passed|\+[1-9]\d*:.*All tests passed", output, re.I)
+    return None if result else f"{executable} output must contain the runner's result lines for at least one test"

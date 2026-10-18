@@ -94,6 +94,16 @@ class RunnerContextTests(unittest.TestCase):
                 self.assertIn(marker, evidence["output"])
                 self.assert_runnable(evidence, passing=False)
 
+    def test_real_go_list_mode_lists_at_least_one_test(self):
+        self.go_fixture()
+        item = self.execute(["-list", ".", "."])
+        self.assertIn("TestActual", item["output"])
+        self.assertNotIn("=== RUN", item["output"])
+        self.assert_runnable(item)
+        item = self.execute(["-list", "DoesNotExist", "."])
+        self.assertNotIn("TestActual", item["output"])
+        self.assert_runnable(item, passing=False)
+
     def test_real_go_positive_and_mixed_packages_do_pass(self):
         self.go_fixture()
         for arguments in (["-run", "^TestActual$", "."], ["-run", "^TestActual$", "./..."]):
@@ -139,12 +149,14 @@ class RunnerContextTests(unittest.TestCase):
         item = {"kind": "command", "command": "cd . && ./mvnw -Dtest=ExampleTest test", "cwd": "app",
                 "exitCode": 0, "output": "Tests run: 1, Failures: 0, Errors: 0, Skipped: 0\n", "timeoutSeconds": 60}
         self.assertFalse((self.root / "app").exists())
-        self.assert_runnable(item, apps={"app": {"description": "Historical fixture"}})
+        with self.assertRaises(ReportError):
+            self.assert_runnable(item, apps={"app": {"description": "Historical fixture"}})
+        _test_evidence([item], 1, {"app": {"description": "Historical fixture"}}, self.root, check_paths=False)
 
     def test_unsafe_or_non_noop_prefixes_remain_rejected(self):
         runner = "./mvnw -Dtest=ExampleTest test"
         prefixes = [
-            "cd /tmp && ", "cd app && ", "cd ../target && ", "cd .; ", "cd . || ",
+            "cd /tmp && ", "cd app && ", "cd ../outside && ", "cd .; ", "cd . || ",
             "cd . && cd . && ", "cd $PWD && ", "cd ~ && ", "cd \"$(pwd)\" && ",
             "cd . && printf ok && ", "cd . && env X=$(pwd) ", "cd . & ",
             "cd . && "+runner+" > /tmp/runner-output && ",

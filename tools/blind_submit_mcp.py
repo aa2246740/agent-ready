@@ -24,7 +24,8 @@ except ImportError:  # non-POSIX
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent_readiness.catalog import criteria_by_id
 from agent_readiness.condition_evidence import condition_errors
-from agent_readiness.report import json_text, read_json, store_report, validate_evaluation
+from agent_readiness.report import ReportError, json_text, read_json, store_report, validate_evaluation
+from agent_readiness.validation import Problems, ValidationError
 
 MAX_BYTES = 512_000
 TOP_KEYS = {"schemaVersion", "rubricVersion", "repository", "apps", "report", "evidence", "actionItems"}
@@ -298,31 +299,45 @@ class Gate:
                 evaluation.write_text(text, encoding="utf-8")
                 evaluation.chmod(0o600)
                 data = read_json(evaluation)  # Existing duplicate/nonfinite checks.
+                problems = Problems()
                 if set(data) != TOP_KEYS:
-                    raise ValueError("Expected exactly these top-level keys: " + ", ".join(sorted(TOP_KEYS)))
+                    problems.add("Expected exactly these top-level keys: " + ", ".join(sorted(TOP_KEYS)) + "; use the prepared evaluation fields")
                 if data.get("repository") != self.template["repository"]:
-                    raise ValueError("repository must equal the prepared snapshot exactly; do not change its paths or identity")
+                    problems.add("repository must equal the prepared snapshot exactly; do not change its paths or identity")
                 if isinstance(data.get("apps"), dict):
-                    for app in data["apps"].values():
+                    for path, app in data["apps"].items():
                         if not isinstance(app, dict) or set(app) != {"description"}:
-                            raise ValueError("Each app accepts only description")
+                            problems.add(f"apps[{path!r}]: Each app accepts only description; remove extra fields")
                 if isinstance(data.get("evidence"), dict):
                     for key, records in data["evidence"].items():
                         if not isinstance(records, list):
-                            continue  # Existing validator supplies the shape error.
-                        for record in records:
+                            continue  # Full validator supplies the shape error.
+                        for index, record in enumerate(records):
                             if not isinstance(record, dict) or record.get("kind") != "file":
-                                raise ValueError(f"{key}: this read-only session permits only file evidence; command evidence is unavailable")
-                            if set(record) - {"kind", "path", "note", "line", "support"}:
-                                raise ValueError(f"{key}: file evidence accepts only kind, path, note, optional line and support")
-                # Same full validator as the CLI, including condition evidence.
-                validate_evaluation(data, self.target)
-                missing = self.missing_reads(data)
-                if missing:
-                    raise ValueError("File evidence not read successfully in this session: " + "; ".join(f"{r['criterionId']}: {r['path']}" for r in missing))
-                unseen = self.missing_quotes(data)
-                if unseen:
-                    raise ValueError("Required-condition quotes not read in this session: " + json.dumps(unseen))
+                                problems.add(f"{key} evidence[{index}].kind: this read-only session permits only file evidence; command evidence is unavailable; cite an observed file")
+                            elif set(record) - {"kind", "path", "note", "line", "support"}:
+                                problems.add(f"{key} evidence[{index}]: file evidence accepts only kind, path, note, optional line and support; remove extra fields")
+                # The same collected list as CLI validation, plus this
+                # file-only session's provenance/transport constraints.
+                try:
+                    validate_evaluation(data, self.target)
+                except ValidationError as error:
+                    problems.extend(error)
+                contents = self.read_contents()
+                evidence = data.get("evidence")
+                for key, records in evidence.items() if isinstance(evidence, dict) else []:
+                    for index, record in enumerate(records if isinstance(records, list) else []):
+                        if not isinstance(record, dict) or record.get("kind") != "file":
+                            continue
+                        path = record.get("path")
+                        if not isinstance(path, str):
+                            continue
+                        if path not in contents:
+                            problems.add(f"{key} evidence[{index}].path: File evidence not read successfully in this session: {path}; read the actual file before citing it")
+                        support = record.get("support")
+                        if isinstance(support, dict) and isinstance(support.get("quote"), str) and not any(support["quote"] in text for text in contents.get(path, [])):
+                            problems.add(f"{key} evidence[{index}].support.quote: Required-condition quotes not read in this session: {path}; read the cited lines before quoting them")
+                problems.raise_if_any(ReportError)
                 if expired():
                     raise ValueError("deadline_exceeded_before_storage")
                 receipt = store_report(data, self.target, self.state)
@@ -333,6 +348,9 @@ class Gate:
                 return response
             except (ValueError, OSError, KeyError, TypeError, OverflowError) as error:
                 detail = diagnostics(data)
+                detail["problems"] = error.problems if isinstance(error, ReportError) else [str(error)]
+                detail["problemCount"] = error.problem_count if isinstance(error, ReportError) else 1
+                detail["omittedProblemCount"] = error.omitted_count if isinstance(error, ReportError) else 0
                 detail["unreadFileEvidence"] = self.missing_reads(data)
                 detail["unreadConditionQuotes"] = self.missing_quotes(data)
                 detail["conditionEvidence"] = condition_errors(data, self.target) if isinstance(data, dict) else []

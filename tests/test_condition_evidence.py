@@ -84,6 +84,49 @@ class ConditionEvidenceTests(unittest.TestCase):
                      {"type": "tool_result", "id": str(index), "value": "header only\n" if path == truncate else source}]
         self.trace.write_text("".join(json.dumps(r) + "\n" for r in rows))
 
+    def test_canonical_updater_filenames_and_known_bot_aliases(self):
+        key = "dependency_update_automation"
+        for updater, filenames in (("dependabot", (".github/dependabot.yml", ".github/dependabot.yaml")),
+                                   ("renovate", ("renovate.json", ".github/renovate.json5", ".renovaterc", ".renovaterc.json"))):
+            for filename in filenames:
+                for author in (updater + "[bot]", "app/" + updater):
+                    with self.subTest(filename=filename, author=author):
+                        quote = 'version: 2\nupdates:\n  - package-ecosystem: pip' if updater == "dependabot" else '{"extends":["config:recommended"]}'
+                        self.sources[filename] = quote + "\n"
+                        path = self.target / filename
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_text(self.sources[filename])
+                        self.sources["pr.json"] = json.dumps({"url": "https://forge.example/team/project/pull/7", "author": author, "title": "Update widget dependency"}) + "\n"
+                        (self.target / "pr.json").write_text(self.sources["pr.json"])
+                        self.data["repository"] = inspect_repository(self.target)
+                        self.data["report"][key]["numerator"] = 1
+                        self.data["evidence"][key] = [
+                            self.record(filename, "dependency_configuration", updater=updater.upper()),
+                            self.record("pr.json", "dependency_pull_request", updater=author, author=author.upper(),
+                                        url="HTTPS://FORGE.EXAMPLE/TEAM/PROJECT/PULL/7", dependency="WIDGET"),
+                        ]
+                        self.assertEqual(condition_errors(self.data, self.target), [])
+                        validate_evaluation(self.data, self.target)
+
+    def test_case_insensitive_alert_facts_and_chain_keep_verbatim_quote(self):
+        records = self.alert()
+        for row in records:
+            facts = row["support"]["facts"]
+            for name in facts:
+                facts[name] = facts[name].upper()
+        self.assertEqual(condition_errors(self.data, self.target), [])
+        records[0]["support"]["quote"] = records[0]["support"]["quote"].upper()
+        self.assertIn("support.quote", str(condition_errors(self.data, self.target)))
+
+    def test_updater_path_exception_does_not_cover_unrelated_files_or_missing_pr(self):
+        rows = self.dependency()
+        rows[0] = self.record("README.md", "dependency_configuration", updater="dependabot")
+        errors = condition_errors(self.data, self.target)
+        self.assertTrue(any(e.get("evidenceIndex") == 0 and e.get("field") == "support.facts.updater" for e in errors))
+        rows[0] = self.record("renovate.json", "dependency_configuration", updater="renovate")
+        rows.pop()
+        self.assertIn("dependency_pull_request", str(condition_errors(self.data, self.target)))
+
     def test_configuration_alone_cannot_prove_dependency_pr(self):
         self.dependency().pop()
         errors = condition_errors(self.data, self.target)
@@ -113,7 +156,7 @@ class ConditionEvidenceTests(unittest.TestCase):
     def test_unquoted_facts_and_invented_excerpt_rejected(self):
         records = self.dependency()
         records[1]["support"]["facts"]["author"] = "not-in-source"
-        self.assertIn("literally", str(condition_errors(self.data, self.target)))
+        self.assertIn("support.facts.author", str(condition_errors(self.data, self.target)))
         records[1]["support"]["quote"] = "fabricated PR record"
         self.assertIn("does not match", str(condition_errors(self.data, self.target)))
 

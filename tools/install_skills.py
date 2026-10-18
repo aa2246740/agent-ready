@@ -28,6 +28,7 @@ RUNTIME_FILES = (
     "agent_readiness/repository.py",
     "agent_readiness/runner_contract.py",
     "agent_readiness/scoring.py",
+    "agent_readiness/validation.py",
     "agent_readiness/data/rules.json",
 )
 

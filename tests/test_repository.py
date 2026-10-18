@@ -329,7 +329,7 @@ class RepositoryTests(unittest.TestCase):
         for path in (str(outside), "../secret", "a/../README.md", "outside-link", "outside-directory/secret", ".git/config", "metadata-link", "missing", ".", "C:\\secret", "\\\\server\\secret"):
             with self.subTest(path=path), self.assertRaises(RepositoryError):
                 validate_evidence(self.root, self.file_evidence(path))
-        for cwd in ("..", "outside-directory", "README.md", str(self.base), "missing"):
+        for cwd in ("..", "outside-directory", "README.md", "missing"):
             with self.subTest(cwd=cwd), self.assertRaises(RepositoryError):
                 validate_evidence(self.root, {"kind": "command", "command": "true", "cwd": cwd, "exitCode": 0, "output": "ok"})
 

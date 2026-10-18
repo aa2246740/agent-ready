@@ -41,6 +41,7 @@ class SubdirectoryCdTests(unittest.TestCase):
     def test_literal_absolute_relative_and_initial_subdirectory_are_preserved(self):
         apps = self.apps()
         commands = [("cd ./apps/server && npm test -- --listTests", "."),
+                    ("cd apps/server && npm test -- --listTests", "."),
                     ("cd -- " + shlex.quote(str(self.root / "apps/server")) + " && yarn test --listTests", "."),
                     ("cd ./server && npm test -- --listTests", "apps")]
         for command, cwd in commands:
@@ -68,7 +69,7 @@ class SubdirectoryCdTests(unittest.TestCase):
 
     def test_unsafe_paths_shell_forms_and_nonexistent_destination_are_rejected(self):
         apps = self.apps()
-        prefixes = ["cd /tmp", "cd -", "cd -P apps/server", "cd apps/server", "cd ../outside", "cd ./apps/server/../web", "cd .git", "cd missing",
+        prefixes = ["cd /tmp", "cd -", "cd -P apps/server", "cd ../outside", "cd ./apps/server/../web", "cd .git", "cd missing",
                     "cd $PWD/apps/server", "cd ~/apps/server", 'cd "$(pwd)/apps/server"', "cd ./apps/*"]
         for prefix in prefixes:
             with self.subTest(prefix=prefix):
@@ -101,13 +102,14 @@ class SubdirectoryCdTests(unittest.TestCase):
         python["output"] = "collected 1 item\n1 test collected in 0.01s\n"
         _test_evidence([python], 1, apps, self.root)
 
-    def test_outer_environment_cannot_redirect_a_changed_directory_runner(self):
+    def test_general_environment_is_allowed_after_cd_but_discovery_escape_is_not(self):
         apps = self.apps()
         for prefix in ("env npm_config_prefix=/other", "npm_config_prefix=/other",
-                       "env NODE_OPTIONS=--require=/other/preload.cjs", "PYTHONPATH=/other",
-                       "PWD=/other", "CDPATH=/other", "env PYTHONDONTWRITEBYTECODE=0"):
+                       "env NODE_OPTIONS=--require=/other/preload.cjs", "PWD=/other",
+                       "CDPATH=/other", "env PYTHONDONTWRITEBYTECODE=0"):
             with self.subTest(prefix=prefix):
-                self.reject(self.captured("cd ./apps/server && " + prefix + " npm test -- --listTests"), apps)
+                _test_evidence([self.captured("cd ./apps/server && " + prefix + " npm test -- --listTests")], 1, apps, self.root)
+        self.reject(self.captured("cd ./apps/server && PYTHONPATH=/other npm test -- --listTests"), apps)
 
     def test_compact_java_and_python_directory_selectors_are_rejected(self):
         apps = self.apps()
