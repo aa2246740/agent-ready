@@ -34,16 +34,19 @@ proof. A merged PR, auto-merge and deployment are not additional requirements.
 Positive alerting_configured needs a connected chain: alert_rule {handler,
 notifier}, automatic_trigger {kind, registration, handler}, alert_delivery
 {notifier}. kind is schedule/event/process/service. Cite enabled automatic
-wiring; a commented/disabled trigger, workflow_dispatch alone, --once or a
-single test message does not prove automatic operation.
+wiring; a commented/disabled trigger, workflow_dispatch alone, an unscheduled
+--once process or a single test message does not prove automatic operation.
+Schedulers may run a bounded --once command; CronJob suspend: true is disabled.
 
 Each cited record has support {condition, quote, facts}; use one condition per
 record. File quote must start on its cited line; command quote must occur in
-successful captured output. Quotes remain verbatim. Facts match without case
+successful captured output. Quotes remain verbatim, with CRLF/CR normalized to LF. Facts match without case
 sensitivity; updater may also match the cited config filename (dependabot.yml,
 renovate.json/json5, .renovaterc). dependabot[bot]/app/dependabot and
 renovate[bot]/app/renovate identify their corresponding updater. Other facts
-must occur in the quote, except trigger kind. Configuration/PR updater and
+must occur in the quote, except trigger kind; handler/notifier may also match
+the cited path. Alert identities normalize source extensions and ::, . and /
+separators (app.monitor == app/monitor.py). Configuration/PR updater and
 trigger/rule/notifier identities must connect. Multi-app alert support needs
 application: <exact apps key>, with a separate connected chain for each passing
 app. Single-app support may omit application. Errors identify all gaps so you
@@ -60,11 +63,16 @@ application, without a minimum event count or invented ingestion proof.
 """
 
 
+def normalize_newlines(text: str) -> str:
+    return text.replace('\r\n', '\n').replace('\r', '\n')
+
+
 def _quoted_source(item: dict, root: Path, quote: str) -> bool:
     # Reuse the normal repository containment/snapshot checks BEFORE reading.
     validate_evidence(root, item)
+    quote = normalize_newlines(quote)
     if item["kind"] == "command":
-        return item["exitCode"] == 0 and quote in item["output"]
+        return item["exitCode"] == 0 and quote in normalize_newlines(item["output"])
     line = item.get("line")
     if type(line) is not int or line < 1:
         return False
@@ -76,7 +84,7 @@ def _quoted_source(item: dict, root: Path, quote: str) -> bool:
                 excerpt.append(text)
             if number >= line + count - 1:
                 break
-    return quote in "".join(excerpt)
+    return quote in normalize_newlines("".join(excerpt))
 
 
 _HASH_SUFFIXES = {
@@ -221,10 +229,46 @@ def _event_scope(lines: list[str], index: int) -> list[str]:
         parent = _sibling_range(lines, current)[2]
 
 
-def _manual_registration(lines: list[str], first: int, last: int) -> bool:
+def _scheduler_registration(lines: list[str], first: int, last: int, kind: str | None) -> bool:
+    if kind in {'process', 'service'}:
+        return False
+    start, end, parent = _sibling_range(lines, first)
+    context = '\n'.join(lines[start:end])
+    registration = '\n'.join(lines[first:last + 1])
+    return bool(
+        (kind in {'schedule', 'event'} and not re.match(r'\s*manual\s+--once(?:\s|$)', registration, re.I))
+        or re.search(r'(?m)^\s*(?:[\d*][\d*/,-]*\s+){5}\S|^\s*@(?:reboot|hourly|daily|weekly|monthly|yearly)\s+\S', registration)
+        or re.search(r'(?im)^\s*(?:schedule|cron)\s*:|^\s*OnCalendar\s*=', context)
+        or (parent is not None and re.match(r'\s*(?:schedule|cron)\s*:', lines[parent], re.I))
+    )
+
+
+def _suspended_cronjob(lines: list[str], first: int) -> bool:
+    # Only spec.suspend on the cited CronJob document is a kill switch.
+    start, end = first, first + 1
+    while start > 0 and lines[start - 1].strip() != '---':
+        start -= 1
+    while end < len(lines) and lines[end].strip() != '---':
+        end += 1
+    document = lines[start:end]
+    if not any(re.match(r'\s*kind:\s*["\']?CronJob["\']?\s*$', text, re.I) for text in document):
+        return False
+    for index, text in enumerate(document):
+        if re.match(r'^spec:\s*$', text):
+            _, stop = _own_block(document, index)
+            children = [line for line in document[index + 1:stop] if line.strip()]
+            if children:
+                base = min(_indent(line) for line in children)
+                return any(_indent(line) == base and re.match(r'\s*suspend:\s*true\s*$', line, re.I) for line in children)
+    return False
+
+
+def _manual_registration(lines: list[str], first: int, last: int, kind: str | None = None) -> bool:
     start, end = _own_block(lines, first)
     own = "\n".join(lines[start:max(end, last + 1)])
-    if _ONCE.search(own) or _ENABLED_FALSE.search(own):
+    if _ENABLED_FALSE.search(own) or (_ONCE.search(own) and not _scheduler_registration(lines, first, last, kind)):
+        return True
+    if _suspended_cronjob(lines, first):
         return True
     base = _indent(lines[first])
     first_sibling, last_sibling, _ = _sibling_range(lines, first)
@@ -235,13 +279,14 @@ def _manual_registration(lines: list[str], first: int, last: int) -> bool:
     return _DISPATCH.search(events) is not None and _AUTOMATIC_EVENT.search(events) is None
 
 
-def _automatic_trigger_error(quote: str, registration: str, path: str | None = None) -> str | None:
+def _automatic_trigger_error(quote: str, registration: str, path: str | None = None, kind: str | None = None) -> str | None:
     """Reject a registration that is only a comment or is structurally manual/disabled.
 
     ``path`` is the cited file; without it (command output) nothing is treated
     as a comment. A registration quoted several times is accepted when at least
     one live occurrence is not manual.
     """
+    quote, registration = normalize_newlines(quote), normalize_newlines(registration)
     mask = _comment_mask(quote, path)
     positions = []
     start = 0
@@ -260,7 +305,7 @@ def _automatic_trigger_error(quote: str, registration: str, path: str | None = N
     for found in live:
         first = active.count("\n", 0, found)
         last = active.count("\n", 0, found + len(registration))
-        if not _manual_registration(lines, first, last):
+        if not _manual_registration(lines, first, last, kind):
             return None
     if live:
         return "registration describes a manual, test-only, planned or disabled trigger; cite the enabled automatic registration"
@@ -281,9 +326,22 @@ def _identity(value: str) -> str:
     return folded
 
 
+def _alert_identity(value: str) -> str:
+    value = value.strip().casefold().replace('::', '/').replace('\\', '/')
+    value = re.sub(r'\.(?:py|js|ts|mjs|cjs|go|rb|java|kt|sh)$', '', value)
+    return re.sub(r'[./]+', '/', value).strip('/')
+
+
 def _fact_matches(name: str, value: str, quote: str, item: dict) -> bool:
     if value.casefold() in quote.casefold():
         return True
+    if name in {'handler', 'notifier'}:
+        identity = _alert_identity(value)
+        tokens = re.findall(r'[\w-]+(?:(?:::|[./])[\w-]+)*', quote)
+        if any(_alert_identity(token) == identity for token in tokens):
+            return True
+        path = _alert_identity(item.get('path', '')) if item.get('kind') == 'file' else ''
+        return bool(path and (path == identity or path.endswith('/' + identity)))
     if name != "updater":
         return False
     updater = _identity(value)
@@ -361,7 +419,7 @@ def condition_errors(data: dict, root: Path) -> list[dict]:
                              and not _fact_matches(name, fact, quote, item)]
             if missing_facts:
                 for name in missing_facts:
-                    error(condition, f"fact {name}={facts[name]!r} does not match the source quote or allowed updater filename/author alias; cite its actual source value", "support.facts." + name)
+                    error(condition, f"fact {name}={facts[name]!r} does not match the source quote, allowed identity path or updater filename/author alias; cite its actual source value", "support.facts." + name)
                 continue
             if condition == "dependency_pull_request":
                 try:
@@ -383,7 +441,7 @@ def condition_errors(data: dict, root: Path) -> list[dict]:
                 # Reject explicit contradictions, not guess arbitrary source
                 # semantics. A manual trigger may coexist with an automatic
                 # one: cite the latter registration separately in that case.
-                trigger_error = _automatic_trigger_error(quote, registration, item["path"] if item["kind"] == "file" else None)
+                trigger_error = _automatic_trigger_error(quote, registration, item["path"] if item["kind"] == "file" else None, facts['kind'].casefold())
                 if trigger_error:
                     error(condition, trigger_error)
                     continue
@@ -398,11 +456,15 @@ def condition_errors(data: dict, root: Path) -> list[dict]:
             else:
                 passing_apps = {a["_application"]
                                 for a in proven["alert_rule"] for b in proven["automatic_trigger"] for c in proven["alert_delivery"]
-                                if a["handler"].casefold() == b["handler"].casefold() and a["notifier"].casefold() == c["notifier"].casefold()
+                                if _alert_identity(a["handler"]) == _alert_identity(b["handler"]) and _alert_identity(a["notifier"]) == _alert_identity(c["notifier"])
                                 and a["_application"] == b["_application"] == c["_application"]}
                 linked = bool(passing_apps)
                 if len(passing_apps) < value["numerator"]:
                     error("passing_applications", f"numerator={value['numerator']} requires that many distinct applications with connected alert evidence; found {len(passing_apps)}")
             if not linked:
-                error("connection", "condition identities do not connect; cite the same updater or trigger/rule/notifier chain")
+                if key == 'alerting_configured':
+                    found = {condition: [{name: _alert_identity(facts[name]) for name in ('handler', 'notifier') if name in facts} for facts in values] for condition, values in proven.items()}
+                    error('connection', 'identities must connect across alert_rule/automatic_trigger/alert_delivery; normalized identities found: ' + str(found))
+                else:
+                    error("connection", "condition identities do not connect; cite the same updater or trigger/rule/notifier chain")
     return errors

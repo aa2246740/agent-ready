@@ -23,7 +23,7 @@ except ImportError:  # non-POSIX
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent_readiness.catalog import criteria_by_id
-from agent_readiness.condition_evidence import condition_errors
+from agent_readiness.condition_evidence import condition_errors, normalize_newlines
 from agent_readiness.report import ReportError, json_text, read_json, store_report, validate_evaluation
 from agent_readiness.validation import Problems, ValidationError
 
@@ -236,7 +236,7 @@ class Gate:
                 if not isinstance(support, dict) or not isinstance(support.get("quote"), str):
                     continue
                 path = item.get("path")
-                if isinstance(path, str) and not any(support["quote"] in text for text in contents.get(path, [])):
+                if isinstance(path, str) and not any(normalize_newlines(support["quote"]) in normalize_newlines(text) for text in contents.get(path, [])):
                     missing.append({"criterionId": key, "path": path, "condition": support.get("condition")})
         return missing
 
@@ -335,7 +335,7 @@ class Gate:
                         if path not in contents:
                             problems.add(f"{key} evidence[{index}].path: File evidence not read successfully in this session: {path}; read the actual file before citing it")
                         support = record.get("support")
-                        if isinstance(support, dict) and isinstance(support.get("quote"), str) and not any(support["quote"] in text for text in contents.get(path, [])):
+                        if isinstance(support, dict) and isinstance(support.get("quote"), str) and not any(normalize_newlines(support["quote"]) in normalize_newlines(text) for text in contents.get(path, [])):
                             problems.add(f"{key} evidence[{index}].support.quote: Required-condition quotes not read in this session: {path}; read the cited lines before quoting them")
                 problems.raise_if_any(ReportError)
                 if expired():

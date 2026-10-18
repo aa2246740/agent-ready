@@ -313,13 +313,16 @@ def _validate_line(path: Path, requested_line: int) -> None:
             if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                 raise RepositoryError("File evidence changed during validation")
             while chunk := stream.read(1024 * 1024):
-                lines += chunk.count(b"\n")
+                # Universal newlines, including a CRLF split across chunks.
+                lines += chunk.count(b"\n") + chunk.count(b"\r") - chunk.count(b"\r\n")
+                if last_byte == b'\r' and chunk.startswith(b'\n'):
+                    lines -= 1
                 if lines >= requested_line:
                     return
                 last_byte = chunk[-1:]
     except OSError as exc:
         raise RepositoryError("Unable to validate file evidence line") from exc
-    if last_byte and last_byte != b"\n":
+    if last_byte and last_byte not in {b"\n", b"\r"}:
         lines += 1
     if requested_line > lines:
         raise RepositoryError("File evidence line does not exist")

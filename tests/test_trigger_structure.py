@@ -113,10 +113,11 @@ class ManualMeansStructure(unittest.TestCase):
         quote = "on:\n  schedule:\n    - cron: '0 0 * * *'\njobs:\n  a:\n    steps:\n      - run: echo workflow_dispatch\n"
         self.assertIsNone(check(quote, "schedule", "ci.yml"))
 
-    def test_once_flag_is_manual(self):
-        self.rejected("0 * * * * check --once\n", "0 * * * * check --once", "crontab")
-        self.rejected("0 * * * * check --once\n", "0 * * * *")
-        self.rejected("ExecStart=/usr/bin/check --once\nOnCalendar=hourly\n", "ExecStart=/usr/bin/check --once")
+    def test_once_is_bounded_work_under_a_scheduler_but_manual_without_one(self):
+        self.assertIsNone(check("0 * * * * check --once\n", "0 * * * * check --once", "crontab"))
+        self.assertIsNone(check("0 * * * * check --once\n", "0 * * * *"))
+        self.assertIsNone(check("ExecStart=/usr/bin/check --once\nOnCalendar=hourly\n", "ExecStart=/usr/bin/check --once"))
+        self.rejected("ExecStart=/usr/bin/check --once\n", "ExecStart=/usr/bin/check --once")
         self.assertIsNone(check("0 * * * * check --once-upon-a-time\n", "0 * * * *"))
         self.assertIsNone(check("0 * * * * check --no-once\n", "0 * * * *"))
 

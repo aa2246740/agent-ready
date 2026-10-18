@@ -101,14 +101,14 @@ class WrapperRunOptionTests(Fixture):
             with self.subTest(command=command):
                 self.rejected(command, COLLECTED)
 
-    def test_option_values_cannot_leave_the_repository(self):
+    def test_non_discovery_values_may_be_external_but_must_be_complete(self):
         for command in (
             "uv run --with-requirements ../requirements.txt pytest --collect-only tests/test_a.py",
             "uv run --env-file /etc/hosts pytest --collect-only tests/test_a.py",
-            "uv run --python",  # option missing its value
         ):
             with self.subTest(command=command):
-                self.rejected(command, COLLECTED)
+                self.accepted(command, COLLECTED)
+        self.rejected('uv run --python', COLLECTED)  # option missing its value
         self.accepted(f"uv run --env-file {self.root}/.env pytest --collect-only tests/test_a.py", COLLECTED)
 
     def test_unwrap_returns_inner_runner(self):

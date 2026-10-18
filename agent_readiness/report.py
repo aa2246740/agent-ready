@@ -13,7 +13,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from . import RUBRIC_VERSION, __version__
-from .application_scope import javascript_application_supported
+from .application_scope import javascript_application_supported, javascript_selection
 from .catalog import criteria_by_id, load_catalog
 from .condition_evidence import condition_errors
 from .repository import RepositoryError, _root_alias_relative, command_cwd, _git, canonicalize_origin, ensure_external_output, inspect_repository, validate_evidence
@@ -229,8 +229,6 @@ def _runner_retargets(words: list[str], root: Path | None, runner_cwd: Path, *,
         selectors |= {"-f", "--file", "-pl", "--projects"}
     elif executable.startswith("python") or executable == "pytest":
         selectors |= {"--rootdir", "--pyargs", "-c", "--config-file"}
-    elif executable in _WRAPPERS:
-        selectors |= {"--project", "--directory", "-p"}
     allowed = set()
     if allow_app_selectors:
         if executable in {"npm", "npx", "pnpm", "yarn", "bun"}:
@@ -325,12 +323,12 @@ def _runner_escapes(words: list[str], root: Path | None, runner_cwd: Path, *, ch
 
 
 def _wrapper_retargets(words: list[str]) -> bool:
-    flags = {"--project", "--directory", "-C", "-p", "--cwd", "--prefix"}
+    flags = _WRAPPER_RETARGET_OPTIONS | ({'-p'} if Path(words[0]).name != 'uv' else set())
     for word in words[1:]:
         if word == "run":
             return False
         option = word.partition("=")[0]
-        if option in flags or (word.startswith("-p") and word not in {"-p"}) or (word.startswith("-C") and word != "-C"):
+        if option in flags or ('-p' in flags and word.startswith('-p')) or (word.startswith("-C") and word != "-C"):
             return True
     return False
 
@@ -358,23 +356,33 @@ def _unwrap_wrapper(words: list[str], allowed_root: Path | None = None) -> list[
 
     Wrapper options after ``run`` (``uv run --frozen --with pytest-xdist
     pytest ...``) are skipped, including the value of options that take one.
-    Directory selectors, ``..`` and absolute option values outside
-    ``allowed_root`` make the run unverifiable and return None.
+    Only directory/project selectors retarget discovery. Interpreter, index,
+    dependency and cache option values do not define the test directory.
     """
     wrapper = Path(words[0]).name
     if wrapper not in _WRAPPERS:
         return words
     args = words[1:]
-    while args and args[0] != "run":
-        if not args[0].startswith("-"):
-            return None
-        args = args[1:]
-    if not args:
-        return None
-    args = args[1:]
     value_options = _WRAPPER_VALUE_OPTIONS.get(wrapper, set())
     short_value_options = tuple(option for option in value_options if len(option) == 2)
-    module = False
+    retargets = _WRAPPER_RETARGET_OPTIONS | ({'-p'} if wrapper != 'uv' else set())
+    module, running = False, False
+    # Parse options on both sides of `run` with their actual value arity.
+    while args and not running:
+        if args[0] == 'run':
+            args, running = args[1:], True
+            break
+        option, separator, _ = args[0].partition('=')
+        if option in retargets or any(args[0].startswith(flag) and args[0] != flag for flag in ('-C', *({'-p'} if wrapper != 'uv' else set()))):
+            return None
+        if not args[0].startswith('-'):
+            return None
+        consume = 2 if option in value_options and not separator else 1
+        if len(args) < consume:
+            return None
+        args = args[consume:]
+    if not running:
+        return None
     while args and args[0].startswith("-") and args[0] != "-":
         word = args[0]
         if word == "--":
@@ -382,7 +390,7 @@ def _unwrap_wrapper(words: list[str], allowed_root: Path | None = None) -> list[
             break
         option, separator, value = word.partition("=")
         compact = not word.startswith("--") and len(word) > 2
-        if option in _WRAPPER_RETARGET_OPTIONS or (compact and word.startswith("-C")):
+        if option in retargets or (compact and any(word.startswith(flag) for flag in ('-C', *({'-p'} if wrapper != 'uv' else set())))):
             return None
         if wrapper == "uv" and option in {"-m", "--module"} and not separator:
             module, value, args = True, None, args[1:]
@@ -396,10 +404,6 @@ def _unwrap_wrapper(words: list[str], allowed_root: Path | None = None) -> list[
             value, args = word[2:], args[1:]
         else:
             value, args = None, args[1:]
-        if value:
-            path = Path(value)
-            if ".." in path.parts or (path.is_absolute() and (allowed_root is None or not path.is_relative_to(allowed_root))):
-                return None
     if wrapper == "hatch" and args and re.fullmatch(r"[A-Za-z0-9_.-]+:[^:\s]+", args[0]):
         args = [args[0].partition(":")[2], *args[1:]]  # `hatch run test:pytest` selects an environment
     if module:
@@ -453,11 +457,58 @@ def _go_packages(words: list[str]) -> list[Path] | None:
     return packages
 
 
-def _go_owns(words: list[str], app: Path) -> bool:
+def _go_owns(words: list[str], app: Path, root: Path | None = None, apps: dict | None = None) -> bool:
     packages = _go_packages(words)
     if not packages:
         return False
-    return all(_inside_app(package, app) or package == app for package in packages)
+    modules = []
+    if root is not None:
+        directories = {Path('.')}
+        for directory in apps or {str(app): {}}:
+            path = Path(directory)
+            directories.update((path, *path.parents))
+        for directory in directories:
+            manifest = root / directory / 'go.mod'
+            try:
+                if manifest.is_symlink() or not manifest.resolve().is_relative_to(root.resolve()):
+                    continue
+                content = manifest.read_text(encoding='utf-8')
+            except (OSError, UnicodeError):
+                continue
+            match = re.search(r'(?m)^\s*module\s+(?:"([^"\n]+)"|([^\s/][^\s]*))', content)
+            if match:
+                modules.append((Path(match[1] or match[2]), directory))
+    mapped = []
+    for package in packages:
+        matches = [(module, directory) for module, directory in modules if package == module or module in package.parents]
+        if matches:
+            module, directory = max(matches, key=lambda item: len(item[0].parts))
+            package = directory / package.relative_to(module)
+        mapped.append(package)
+    return all(_inside_app(package, app) or package == app for package in mapped)
+
+
+def _go_executed_tests(output: str) -> bool:
+    empty, observed, tested = False, False, False
+    for line in output.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            event = None
+        if isinstance(event, dict):
+            if event.get('Action') == 'pass' and event.get('Test'):
+                tested = True
+            continue
+        if re.search(r'testing: warning: no tests to run|\[no tests? (?:to run|files)\]', line, re.I):
+            empty = True
+        if re.match(r'^(?:=== RUN\s+|--- PASS:\s+|(?:Test|Example|Fuzz)\w*\s*$)', line):
+            observed = True
+        if re.match(r'^ok\s+\S+\s+(?:\d+(?:\.\d+)?s|\(cached\))', line):
+            tested = tested or (not empty or observed)
+            empty, observed = False, False
+        elif re.match(r'^\?\s+\S+', line):
+            empty, observed = False, False
+    return tested
 
 
 def _flag_values(words: list[str], names: set[str], compact: set[str]) -> list[str]:
@@ -508,12 +559,73 @@ def _gradle_owns(words: list[str], app: Path) -> bool:
     return bool(named) and all(_inside_app(path, app) for path in named)
 
 
-def _root_command_owns_app(executable: str, words: list[str], app: str) -> bool:
+def _cargo_owns(words: list[str], app: str, runner_cwd: Path, root: Path | None, apps: dict, *, check_paths: bool) -> bool:
+    args = words[2:words.index('--')] if '--' in words else words[2:]
+    packages = _flag_values(args, {'-p', '--package'}, {'-p'})
+    manifests = _flag_values(args, {'--manifest-path'}, set())
+    bins = _flag_values(args, {'--bin'}, set())
+    for value in manifests:
+        path = Path(value)
+        if path.is_absolute():
+            if root is None:
+                continue  # Historical readback cannot resolve a deleted checkout.
+            try: path = path.relative_to(root)
+            except ValueError: return False
+        else:
+            path = runner_cwd / path
+        if path.parent != Path(app) and Path(app) not in path.parent.parents:
+            return False
+    if not check_paths or root is None:
+        return True
+    names, binary_names, known_owners = {}, {}, set()
+    candidates = {root / key / 'Cargo.toml' for key in apps}
+    listed = _git(root, 'ls-files', '--cached', '--others', '--exclude-standard', '-z', optional=True)
+    if listed:
+        candidates.update(root / os.fsdecode(value) for value in listed.split(b'\x00')
+                          if value and Path(os.fsdecode(value)).name == 'Cargo.toml')
+    for manifest in candidates:
+        relative = manifest.parent.relative_to(root)
+        owners = [key for key in apps if relative == Path(key) or Path(key) in relative.parents]
+        if not owners:
+            continue
+        owner = max(owners, key=lambda key: len(Path(key).parts))
+        try:
+            if manifest.is_symlink() or not manifest.resolve().is_relative_to(root.resolve()):
+                continue
+            content = manifest.read_text(encoding='utf-8')
+        except (OSError, UnicodeError):
+            continue
+        section, package_name, binaries = '', None, []
+        for line in content.splitlines():
+            if line.strip().startswith('['):
+                section = line.strip().split('#', 1)[0].strip()
+            match = re.match(r"\s*name\s*=\s*[\"']([^\"']+)[\"']", line)
+            if match and section == '[package]':
+                package_name = match[1]
+            elif match and section == '[[bin]]':
+                binaries.append(match[1])
+        if package_name:
+            known_owners.add(owner)
+            names.setdefault(package_name, set()).add(owner)
+            for binary in set(binaries) | {package_name}:
+                binary_names.setdefault(binary, set()).add(owner)
+    # A root application includes its local library crates. The most specific
+    # declared application owns a nested crate when both root and child exist.
+    for values, identities in ((packages, names), (bins, binary_names)):
+        for value in values:
+            name = value.split('@', 1)[0] if identities is names else value
+            owners = identities.get(name)
+            if (owners is not None and owners != {app}) or (owners is None and app in known_owners):
+                return False
+    return True
+
+
+def _root_command_owns_app(executable: str, words: list[str], app: str, root: Path | None = None, apps: dict | None = None) -> bool:
     if app == ".":
         return True
     app_path = Path(app)
     if executable == "go":
-        return _go_owns(words, app_path)
+        return _go_owns(words, app_path, root, apps)
     if executable in {"mvn", "mvnw"}:
         return _maven_owns(words, app_path)
     if executable in {"gradle", "gradlew"}:
@@ -560,7 +672,7 @@ def _test_record(item: dict, apps: dict, root: Path | None, *, check_paths: bool
     if not words:
         raise ReportError("assignments need a direct test runner command")
     if Path(words[0]).name in _WRAPPERS:
-        if _wrapper_retargets(words) or _runner_retargets(words, root, runner_cwd):
+        if _wrapper_retargets(words):
             raise ReportError("wrapper options retarget discovery; run from the target without --project/--directory selectors")
         unwrapped = _unwrap_wrapper(words, None if root is None else root / runner_cwd)
         if not unwrapped:
@@ -569,13 +681,14 @@ def _test_record(item: dict, apps: dict, root: Path | None, *, check_paths: bool
     executable = Path(words[0]).name
     if executable in _SHELLS or executable in _FORBIDDEN_COMMANDS:
         raise ReportError("shell/utility wrappers are not direct test runners; record the runner itself")
-    if _runner_retargets(words, root, runner_cwd, allow_app_selectors=not changed_directory):
+    if _runner_retargets(words, root, runner_cwd, allow_app_selectors=True):
         raise ReportError("runner arguments retarget discovery outside its scope; select tests within the runner directory")
     if _runner_escapes(words, root, runner_cwd, check_paths=check_paths):
         raise ReportError("runner arguments escape its directory or traverse a symlink; use real in-target paths")
     output = item.get("output")
     if not isinstance(output, str) or not output.strip():
         raise ReportError("output must contain actual runner listing/collection/result lines; an empty capture cannot prove tests")
+    output = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', output)
     if re.search(r"\b(?:collected\s+0\s+items|0\s+tests?\s+(?:collected|listed)|no tests (?:found|collected)|tests run:\s*0)\b", output, re.I):
         raise ReportError("runner reports zero tests; cite at least one collected/listed/executed test")
     if executable in {"echo", "printf", "true", "false", "cat", "ls", "find", "rg", "grep"}:
@@ -588,7 +701,7 @@ def _test_record(item: dict, apps: dict, root: Path | None, *, check_paths: bool
             scope_words = [words[0], *shlex.split(addopts), *words[1:]]
         except ValueError as exc:
             raise ReportError("PYTEST_ADDOPTS quoting is invalid; record valid literal options") from exc
-        if _runner_retargets([words[0], *shlex.split(addopts)], root, runner_cwd, allow_app_selectors=not changed_directory) or _runner_escapes(scope_words, root, runner_cwd, check_paths=check_paths):
+        if _runner_retargets([words[0], *shlex.split(addopts)], root, runner_cwd, allow_app_selectors=True) or _runner_escapes(scope_words, root, runner_cwd, check_paths=check_paths):
             raise ReportError("PYTEST_ADDOPTS retargets discovery; keep options within the selected application")
         selected_file = python_collection_file(words, addopts=addopts)
         if selected_file is None:
@@ -605,10 +718,13 @@ def _test_record(item: dict, apps: dict, root: Path | None, *, check_paths: bool
         if not java_test_execution(words, output):
             raise ReportError("Java requires actual execution of one selected test class; use --tests plus --rerun-tasks or -Dtest=<class> and capture test results")
     elif executable in {"npm", "npx", "pnpm", "yarn", "bun", "jest", "vitest"}:
-        if not javascript_collection(words):
-            raise ReportError("TS/JS requires runner-native collection/list mode; use jest --listTests or vitest list")
-        if re.search(r"(?m)^\s*(?:PASS|FAIL)(?:\s|$)|\b\d+\s+(?:tests?\s+)?(?:passed|failed)\b", output):
+        kind, selected = javascript_selection(words, runner_cwd, apps, root, check_paths=check_paths)
+        if kind and selected == set():
+            raise ReportError("TS/JS workspace/directory selector is ambiguous, a glob, unknown or outside the target; name exactly one apps directory or package.json name")
+        if re.search(r"(?m)^\s*(?:PASS|FAIL)(?:\s|$)|\b\d+\s+(?:tests?\s+)?(?:passed|failed)\b|\((?:pass|fail)\)|(?m:^\s*\d+\s+(?:pass|fail)\b)|\bRan\s+\d+\s+tests?\b", output):
             raise ReportError("TS/JS output reports executed tests; capture runner list/collection output only")
+        if not javascript_collection(words, root, runner_cwd, apps, check_paths=check_paths):
+            raise ReportError("TS/JS requires runner-native collection/list mode; use jest --listTests or vitest list, including in the selected package script")
     elif executable == "go":
         own_flags = words[2:words.index("-args")] if "-args" in words else words[2:]
         flags = {"-" + word.partition("=")[0].lstrip("-").removeprefix("test.") for word in own_flags if word.startswith("-")}
@@ -626,15 +742,7 @@ def _test_record(item: dict, apps: dict, root: Path | None, *, check_paths: bool
             if not listed:
                 raise ReportError("Go list output must enumerate at least one test; summary/build lines alone are insufficient")
         else:
-            tested = any(re.match(r"^ok\s+\S+\s+(?:\d+(?:\.\d+)?s|\(cached\))", line) and not re.search(r"\[no tests? (?:to run|files)\]", line, re.I) for line in output.splitlines())
-            for line in output.splitlines():
-                try:
-                    event = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(event, dict) and event.get("Action") == "pass" and event.get("Test"):
-                    tested = True
-            if not tested:
+            if not _go_executed_tests(output):
                 raise ReportError("Go output must report at least one passing test package/test event; testless or unmatched selections do not count")
     else:
         reason = other_runner_error(words, output)
@@ -679,8 +787,10 @@ def _test_record(item: dict, apps: dict, root: Path | None, *, check_paths: bool
                 raise ReportError("Python configuration belongs to another application; cite the selected app's configuration")
         if check_paths and root is not None and not (root / selected_path).is_file():
             raise ReportError(f"selected Python test file {selected_path} does not exist; cite an existing test file")
-    if len(apps) > 1 and runner_cwd == Path(".") and app != "." and not _root_command_owns_app(executable, words, app):
+    if len(apps) > 1 and runner_cwd == Path(".") and app != "." and not _root_command_owns_app(executable, words, app, root if check_paths else None, apps):
         raise ReportError(f"root command does not select application {app}; use that app's package/module selector")
+    if executable == 'cargo' and not _cargo_owns(words, app, runner_cwd, root, apps, check_paths=check_paths):
+        raise ReportError(f"cargo package/manifest/bin selectors do not select application {app}; cite that app's Cargo.toml package and binary")
     if executable in {"npm", "npx", "pnpm", "yarn", "bun", "jest", "vitest"}:
         if not javascript_application_supported(app, words, runner_cwd, apps, root, output, check_paths=check_paths):
             raise ReportError(f"TS/JS selectors/output do not substantiate application {app}; cite its runner and listed test paths")
@@ -689,12 +799,19 @@ def _test_record(item: dict, apps: dict, root: Path | None, *, check_paths: bool
 
 def _test_evidence(items: list, numerator: int, apps: dict, root: Path | None = None, *, check_paths: bool = True) -> None:
     passing_apps = set()
+    captures = {}
     problems = Problems()
     for index, item in enumerate(items):
         if not isinstance(item, dict) or item.get("kind") != "command":
             continue
         try:
-            passing_apps.add(_test_record(item, apps, root, check_paths=check_paths))
+            app = _test_record(item, apps, root, check_paths=check_paths)
+            _, directory = _parse_runner_context(item['command'], item['cwd'], root, check_paths=check_paths)
+            capture = (item['command'], directory, item['output'])
+            if capture in captures and captures[capture] != app:
+                raise ReportError(f"same command, effective runner directory and output already count for application {captures[capture]}; capture distinct evidence for {app}")
+            captures[capture] = app
+            passing_apps.add(app)
         except (ReportError, RepositoryError) as exc:
             problems.extend(exc, f"unit_tests_runnable evidence[{index}]: ")
         except (ValueError, OSError, RuntimeError) as exc:

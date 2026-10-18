@@ -9,6 +9,8 @@ from pathlib import Path
 import re
 import shlex
 
+from .application_scope import javascript_selection
+
 
 def python_collection_file(words: list[str], *, addopts: str = "") -> str | None:
     """Return the sole literal pytest file, or reject unsupported scope."""
@@ -87,7 +89,7 @@ def python_collection_matches_file(selected: str, output: str) -> bool:
     return True
 
 
-def javascript_collection(words: list[str]) -> bool:
+def _javascript_collection(words: list[str]) -> bool:
     """Distinguish package dependency listing from a test runner's list mode."""
     executable = Path(words[0]).name
     args = words[1:]
@@ -104,6 +106,8 @@ def javascript_collection(words: list[str]) -> bool:
         args = args[consume:]
     if executable == "yarn" and args[:1] == ["workspace"]:
         args = args[2:]
+    if executable == "bun" and args[:1] == ["test"]:
+        return False  # Bun test has no native listing mode for these generic flags.
     if executable in {"jest", "vitest"}:
         runner = executable
         runner_args = words[1:]
@@ -121,7 +125,7 @@ def javascript_collection(words: list[str]) -> bool:
         # Package metadata commands can accept an unknown list flag and exit
         # zero (for example `npm root --listTests`). Only test entry points or
         # explicit package scripts qualify; script behavior still needs evidence.
-        if not explicit_script and operation not in {"test", "t", "tst", "jest", "vitest"}:
+        if not explicit_script and operation not in {"test", "t", "tst", "jest", "vitest", "playwright"}:
             return False
         runner = operation
         if explicit_script:
@@ -136,10 +140,71 @@ def javascript_collection(words: list[str]) -> bool:
                 return False
     if runner == "vitest" and runner_args[:1] == ["list"]:
         return True
+    if runner == "playwright":
+        return runner_args[:1] == ["test"] and "--list" in runner_args
     # A literal `list` alone is never evidence for npm/pnpm/yarn dependency
     # commands, or for an unknown package script.
     return any(arg in {"--listTests", "--list-tests", "--list", "--collect-only"}
                for arg in runner_args)
+
+
+def javascript_collection(words: list[str], root: Path | None = None,
+                          runner_cwd: Path = Path('.'), apps: dict | None = None,
+                          *, check_paths: bool = True) -> bool:
+    if _javascript_collection(words):
+        return True
+    if root is None or not check_paths or Path(words[0]).name not in {'npm', 'pnpm', 'yarn', 'bun'}:
+        return False
+    kind, selected = javascript_selection(words, runner_cwd, apps or {'.': {}}, root)
+    if kind and (not selected or len(selected) != 1):
+        return False
+    directory = root / (next(iter(selected)) if selected else runner_cwd)
+    manifest = directory / 'package.json'
+    try:
+        if not manifest.resolve(strict=True).is_relative_to(root.resolve()):
+            return False
+        scripts = json.loads(manifest.read_text(encoding='utf-8')).get('scripts', {})
+    except (OSError, ValueError, AttributeError, RuntimeError):
+        return False
+    if not isinstance(scripts, dict):
+        return False
+    # Options and workspace names may precede or follow the script. Match the
+    # actual package-script operation, never an arbitrary argv value.
+    args, index = words[1:], 0
+    value_options = {'--prefix', '--cwd', '--dir', '--directory', '-C', '--workspace', '-w', '--filter', '-F', '--cache', '--registry'}
+    while index < len(args) and args[index].startswith('-'):
+        option, equal, _ = args[index].partition('=')
+        index += 2 if option in value_options and not equal else 1
+    args = args[index:]
+    if Path(words[0]).name == 'yarn' and args[:1] == ['workspace']:
+        args = args[2:]
+    explicit_script = args[:1] in (['run'], ['run-script'])
+    if explicit_script:
+        args = args[1:]
+    elif Path(words[0]).name == 'npm' and args[:1] not in (['test'], ['t'], ['tst']):
+        return False
+    if not args:
+        return False
+    if not explicit_script and Path(words[0]).name == 'bun' and args[:1] == ['test']:
+        return False  # `bun test` always invokes Bun, even with scripts.test set.
+    name = 'test' if args[0] in {'t', 'tst'} else args[0]
+    body = scripts.get(name)
+    if not isinstance(body, str) or any(symbol in body for symbol in ('&&', '|', ';', '`', '$(', '>', '<', '\n')):
+        return False
+    try:
+        inner = shlex.split(body)
+    except ValueError:
+        return False
+    # Only literal native test-list commands qualify from script bodies.
+    if inner and Path(inner[0]).name == 'npx':
+        inner = inner[1:]
+        if inner[:1] == ['--no-install']:
+            inner = inner[1:]
+    return bool(inner) and (
+        (Path(inner[0]).name == 'vitest' and inner[1:2] == ['list'])
+        or (Path(inner[0]).name == 'jest' and '--listTests' in inner[1:])
+        or (Path(inner[0]).name == 'playwright' and inner[1:2] == ['test'] and '--list' in inner[2:])
+    )
 
 
 def java_test_execution(words: list[str], output: str) -> bool:
@@ -213,8 +278,10 @@ def other_runner_error(words: list[str], output: str) -> str | None:
         if args[:1] != ["test"]:
             return f"{executable} command does not run tests; use its test subcommand"
         args = args[1:]
-    elif executable not in {"ctest", "ruby", "rspec", "phpunit", "rake", "mocha", "ava", "tap"}:
-        return f"unrecognized test runner {executable}; cite a supported native runner"
+    elif executable == 'php' and args[:2] == ['artisan', 'test']:
+        executable, args = 'pest', args[2:]
+    elif executable not in {"ctest", "ruby", "rspec", "phpunit", "pest", "rake", "mocha", "ava", "tap"}:
+        return f"unrecognized test runner {executable}; cite its native test-list command with at least one listed test, or a bounded test file/filter with the runner's passing result lines"
     options = {word.partition("=")[0] for word in args}
     if options & {"--no-run", "--dry-run", "--help", "--version", "-h", "--list-targets", "--help-command"}:
         return "compile-only, dry-run, help or version mode does not list or execute tests; use a native test list or bounded execution"
@@ -233,7 +300,7 @@ def other_runner_error(words: list[str], output: str) -> str | None:
             if not word.startswith("-"):
                 positional.append(word)
             index += 1
-        scoped = bool(positional) or bool(options & {"-p", "--package", "--test", "--lib", "--bin"})
+        scoped = bool(positional) or bool(options & {"-p", "--package", "--manifest-path", "--test", "--lib", "--bin"})
         if not scoped:
             return "cargo test without -- --list, a test filter or a crate/library selector runs the full suite; select a bounded target"
         return None if re.search(r"test result:\s*ok\.\s*[1-9]\d* passed", output, re.I) else "cargo output must report at least one passing test"
@@ -257,8 +324,8 @@ def other_runner_error(words: list[str], output: str) -> str | None:
         if "--filter" not in options and not any(word.endswith((".csproj", ".fsproj", ".vbproj")) for word in args):
             return "dotnet test needs a project or test filter; use --filter or --list-tests"
         return None if re.search(r"Passed:\s*[1-9]\d*|Passed!.*Total:\s*[1-9]\d*", output, re.I) else "dotnet output must report at least one passing test"
-    if executable == "phpunit" and options & {"--list-tests", "--list-tests-xml"}:
-        return None if re.search(r"(?m)^\s*-\s+\S|<testCase\b", output) else "phpunit listing must enumerate at least one test"
+    if executable in {"phpunit", "pest"} and options & {"--list-tests", "--list-tests-xml"}:
+        return None if re.search(r"(?m)^\s*-\s+\S|<testCase\b", output) else f"{executable} listing must enumerate at least one test"
     if executable in {"swift", "dart", "flutter", "deno", "mocha", "ava", "tap"} and options & {"--list-tests", "--list"}:
         return None if re.search(r"(?m)^\s*\S+(?:::|/| > )\S+", output) else f"{executable} listing must enumerate at least one test"
     if executable == "rake" and (options & {"-T", "--tasks", "-D", "--describe", "-P", "--prereqs", "-n"} or not any(word == "test" or word.startswith("test:") for word in args)):
@@ -267,5 +334,10 @@ def other_runner_error(words: list[str], output: str) -> str | None:
     selected = selected or bool(options & {"--filter", "--name", "--grep", "-e", "--example", "--test-filter"})
     if not selected:
         return f"{executable} execution needs a test file or filter; select a bounded target"
+    if executable == 'pest':
+        if re.search(r'(?im)^\s*FAIL\b|\b[1-9]\d*\s+failed\b', output):
+            return 'pest output reports failed tests; capture successful test results'
+        result = re.search(r'(?im)^\s*Tests:\s*(?:.*?\s)?[1-9]\d*\s+passed\b|\bOK\s*\([1-9]\d*\s+tests?\b', output)
+        return None if result else "pest output must report Tests: N passed or OK (N tests) for at least one test"
     result = re.search(r"\b[1-9]\d*\s+(?:tests?|examples?|passing|passed|runs)|\bOK\s*\([1-9]\d*\s+tests?\)|\bAll [1-9]\d* tests? passed|\+[1-9]\d*:.*All tests passed", output, re.I)
     return None if result else f"{executable} output must contain the runner's result lines for at least one test"
