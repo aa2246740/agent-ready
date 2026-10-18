@@ -104,6 +104,18 @@ class RunnerContextTests(unittest.TestCase):
         self.assertNotIn("TestActual", item["output"])
         self.assert_runnable(item, passing=False)
 
+    def test_real_go_import_path_resolves_nested_local_module_owner(self):
+        self.go_fixture('app')
+        (self.root / 'other').mkdir()
+        (self.root / 'go.work').write_text('go 1.18\n\nuse ./app\n')
+        item = self.execute(['-list', '.', 'example.invalid/readiness-execution'])
+        self.assertIn('TestActual', item['output'])
+        apps = {'app': {'description': 'Actual Go test module'}, 'other': {'description': 'Separate app'}}
+        item['application'] = 'app'
+        self.assert_runnable(item, apps=apps)
+        item['application'] = 'other'
+        self.assert_runnable(item, apps=apps, passing=False)
+
     def test_real_go_positive_and_mixed_packages_do_pass(self):
         self.go_fixture()
         for arguments in (["-run", "^TestActual$", "."], ["-run", "^TestActual$", "./..."]):

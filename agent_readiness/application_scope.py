@@ -61,22 +61,14 @@ def _manifest_name(root, app):
 _DIRECTORY_OPTIONS = {'--prefix', '--cwd', '--dir', '--directory', '-C'}
 
 
-def _explicit_directory_option(words):
-    args = words[1:]
-    if '--' in args:
-        args = args[:args.index('--')]
-    return any(token.partition('=')[0] in _DIRECTORY_OPTIONS
-               or (token.startswith('-C') and token != '-C') for token in args)
-
-
 def _selected_apps(words, cwd, apps, root, check_paths):
     """Return (has_selector, selected-or-None).
 
     None preserves historical named-workspace interpretation via captured paths;
     an empty set denotes a recognized but unsupported or inconsistent selector.
     Literal directory and workspace names are supported, as are npm's all or
-    repeated workspaces. Dynamic pnpm filters and Yarn foreach options remain
-    unverified here instead of silently assigning coverage to every application.
+    repeated workspaces. Pnpm filters must be exact names/directories; dynamic
+    filters and Yarn foreach never silently cover every application.
     """
     executable = Path(words[0]).name
     if executable not in {'npm', 'npx', 'pnpm', 'yarn', 'bun'}:
@@ -97,12 +89,14 @@ def _selected_apps(words, cwd, apps, root, check_paths):
             paths.append(value)
         elif token.startswith('-C') and token != '-C':
             paths.append(token[2:])
-        elif key in {'--workspace', '-w'} or (executable == 'yarn' and token == 'workspace'):
+        elif key in {'--workspace', '-w', '--filter', '-F'} or (executable == 'yarn' and token == 'workspace'):
             if not equal:
                 i += 1
                 if i == len(args): return True, set()
                 value = args[i]
             names.append(value)
+        elif token.startswith('-F') and token != '-F':
+            names.append(token[2:])
         elif token.startswith('-w') and token not in {'-ws', '-w'}:
             names.append(token[2:])
         elif key in {'--workspaces', '-ws'}:
@@ -111,11 +105,13 @@ def _selected_apps(words, cwd, apps, root, check_paths):
         elif key == '--include-workspace-root':
             if equal and value not in {'true', 'false'}: return True, set()
             include_root = value != 'false'
-        elif token in {'workspaces', '--filter', '-F', '--include', '--exclude'} or key in {'--filter', '--include', '--exclude'}:
+        elif token in {'workspaces', '--include', '--exclude'} or key in {'--include', '--exclude'}:
             return True, set()
         i += 1
     if not (paths or names or all_workspaces):
         return False, None
+    if any(any(char in value for char in '*?[]{}!') or '...' in value for value in paths + names):
+        return True, set()
     if paths and (names or all_workspaces):
         return True, set()  # mixed configuration roots need an explicit capture
     if paths:
@@ -144,10 +140,21 @@ def _selected_apps(words, cwd, apps, root, check_paths):
     # in. Merely having a root package name does not change that selection.
     selected = {app for app, name in known.items() if name and (app != '.' or include_root)} if all_workspaces else set()
     for name in names:
-        matches = {app for app, actual in known.items() if name == actual or Path(name) == Path(app)}
+        directory = Path(name)
+        if directory.is_absolute():
+            try: directory = directory.relative_to(root)
+            except ValueError: return True, set()
+        else:
+            directory = cwd / directory
+        matches = {app for app, actual in known.items() if name == actual or directory == Path(app)}
         if len(matches) != 1: return True, set()
         selected.update(matches)
     return kind, selected
+
+
+def javascript_selection(words, cwd, apps, root, *, check_paths=True):
+    """Expose the same workspace resolution to script lookup and diagnostics."""
+    return _selected_apps(words, cwd, apps, root, check_paths)
 
 
 def javascript_application_supported(app, words, runner_cwd, apps, root, output, *, check_paths=True):
@@ -156,9 +163,9 @@ def javascript_application_supported(app, words, runner_cwd, apps, root, output,
     # An explicit --prefix/--cwd/--dir/-C is resolved before that shortcut:
     # `npm --prefix ../other` must not inherit the single-app allowance.
     root = Path(root) if root is not None else None
-    if set(apps) == {'.'} and not _explicit_directory_option(words):
-        return app == '.'
     kind, selected = _selected_apps(words, runner_cwd, apps, root, check_paths)
+    if set(apps) == {'.'} and not kind:
+        return app == '.'
     if set(apps) == {'.'}:
         return app == '.' and bool(selected) and app in selected
     if kind and selected is not None and app not in selected:
