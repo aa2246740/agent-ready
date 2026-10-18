@@ -3,18 +3,30 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import json
 import math
+import os
+import shlex
+import signal
+import subprocess
 import sys
+import tempfile
+import threading
 from pathlib import Path
 
 from . import __version__
 from .catalog import criteria_by_id, load_catalog
 from .prompts import assessment_prompt, fix_prompt, fix_without_report_prompt
 from .report import ReportError, json_text, latest_report, new_evaluation, read_json, render_markdown, store_report
-from .repository import ensure_external_output, inspect_repository
-from .scoring import score_report
+from .repository import _root, ensure_external_output, inspect_repository
+from .scoring import score_report, status
 from .validation import ValidationError
+
+# Output kept by `capture`: the first and last characters, with a marker for the gap.
+CAPTURE_HEAD = 6000
+CAPTURE_TAIL = 3000
+CAPTURE_TIMEOUT_EXIT = 124
 
 
 def parser() -> argparse.ArgumentParser:
@@ -32,7 +44,17 @@ def parser() -> argparse.ArgumentParser:
     report.add_argument("target")
     report.add_argument("--input", type=Path, required=True)
     report.add_argument("--state-dir", type=Path)
-    show = commands.add_parser("show", help="Read the latest local report")
+    report.add_argument("--json", action="store_true", help="Print the full stored report JSON instead of the short summary")
+    capture = commands.add_parser(
+        "capture", usage="%(prog)s --target TARGET [--cwd DIR] --timeout SECONDS [--append-to EVALUATION --criterion ID [--application APP]] -- COMMAND...",
+        help="Optional helper: run one command inside the target and print (or append) its command evidence record")
+    capture.add_argument("--target", required=True)
+    capture.add_argument("--cwd", help="Directory inside the target to run in; relative paths are relative to the target root (default: the root)")
+    capture.add_argument("--timeout", type=float, required=True, help="Seconds before the command's process group is killed (exit code 124)")
+    capture.add_argument("--append-to", type=Path, help="evaluation.json outside the target to update atomically")
+    capture.add_argument("--criterion", help="Criterion ID whose evidence list receives the record (with --append-to)")
+    capture.add_argument("--application", help="Application directory to put on the record (monorepo commands)")
+    show =commands.add_parser("show", help="Read the latest local report")
     show.add_argument("target")
     show.add_argument("--state-dir", type=Path)
     show.add_argument("--json", action="store_true")
@@ -47,6 +69,170 @@ def parser() -> argparse.ArgumentParser:
     score = commands.add_parser("score", help="Native-compatible arithmetic on supplied values; does NOT validate repository readiness")
     score.add_argument("--input", type=Path, required=True)
     return root
+
+
+class _OutputWindow:
+    """Keeps the first CAPTURE_HEAD and last CAPTURE_TAIL characters of a stream."""
+
+    def __init__(self) -> None:
+        self.head = self.tail = ""
+        self.total = 0
+
+    def feed(self, text: str) -> None:
+        self.total += len(text)
+        room = CAPTURE_HEAD - len(self.head)
+        if room > 0:
+            self.head += text[:room]
+            text = text[room:]
+        self.tail = (self.tail + text)[-CAPTURE_TAIL:]
+
+    def text(self) -> str:
+        omitted = self.total - len(self.head) - len(self.tail)
+        if omitted <= 0:
+            return self.head + self.tail
+        return f"{self.head}\n[... {omitted} characters omitted by capture ...]\n{self.tail}"
+
+
+def _drain(stream, window: _OutputWindow) -> None:
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    while True:
+        chunk = os.read(stream.fileno(), 65536)
+        if not chunk:
+            break
+        window.feed(decoder.decode(chunk))
+    window.feed(decoder.decode(b"", final=True))
+
+
+def _run_captured(command: str, cwd: Path, timeout: float) -> tuple[int, str]:
+    """Run `/bin/sh -c command` and return its real exit code and combined output."""
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PWD=str(cwd))
+    process = subprocess.Popen(
+        ["/bin/sh", "-c", command], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+    window = _OutputWindow()
+    reader = threading.Thread(target=_drain, args=(process.stdout, window), daemon=True)
+    reader.start()
+    timed_out = False
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+    reader.join(timeout=5)
+    output = window.text()
+    code = process.returncode
+    note = ""
+    if timed_out:
+        code = CAPTURE_TIMEOUT_EXIT
+        note = f"[capture: timed out after {timeout:g}s; the process group was killed]"
+    elif code < 0:
+        note = f"[capture: terminated by signal {-code}]"
+        code = 128 - code
+    if note and output and not output.endswith("\n"):
+        output += "\n"
+    return code, output + note
+
+
+def _lock_directory(directory: Path):
+    """Serialise concurrent --append-to updates of files in one directory (POSIX only)."""
+    try:
+        import fcntl
+    except ImportError:
+        return None
+    descriptor = os.open(directory, os.O_RDONLY)
+    fcntl.flock(descriptor, fcntl.LOCK_EX)
+    return descriptor
+
+
+def _append_evidence(path: Path, criterion: str, record: dict) -> int:
+    """Atomically add `record` to evidence[criterion]; returns the new list length."""
+    lock = _lock_directory(path.parent)
+    try:
+        data = read_json(path)
+        evidence = data.setdefault("evidence", {})
+        if not isinstance(evidence, dict) or not isinstance(evidence.setdefault(criterion, []), list):
+            raise ReportError(f"{path.name}: evidence must be an object of lists; evidence.{criterion} is not a list")
+        evidence[criterion].append(record)
+        text = json_text(data)
+        mode = path.stat().st_mode & 0o777
+        descriptor, name = tempfile.mkstemp(prefix=f".{path.name}-", suffix=".tmp", dir=path.parent)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(text)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.chmod(name, mode)
+            os.replace(name, path)
+        except BaseException:
+            if os.path.exists(name):
+                os.unlink(name)
+            raise
+        return len(evidence[criterion])
+    finally:
+        if lock is not None:
+            os.close(lock)
+
+
+def capture_command(args: argparse.Namespace) -> int:
+    """Run one command in the target and emit an honest command evidence record."""
+    words = args.shell_command
+    if not words:
+        raise ReportError("capture needs a command after `--`")
+    if not math.isfinite(args.timeout) or args.timeout <= 0:
+        raise ReportError("--timeout must be a positive number of seconds")
+    if bool(args.append_to) != bool(args.criterion):
+        raise ReportError("--append-to and --criterion must be used together")
+    root = _root(args.target)
+    try:
+        cwd = (root / Path(args.cwd or ".").expanduser()).resolve(strict=True)  # an absolute --cwd replaces the root
+    except (OSError, RuntimeError) as error:
+        raise ReportError(f"--cwd cannot be resolved: {error}") from error
+    if not cwd.is_dir() or (cwd != root and root not in cwd.parents):
+        raise ReportError("--cwd must be an existing directory inside the target; capture never runs outside it")
+    destination = None
+    if args.append_to:
+        if args.criterion not in criteria_by_id():
+            raise ReportError(f"Unknown criterion: {args.criterion}")
+        destination = ensure_external_output(root, args.append_to)
+        read_json(destination)  # fail before running anything long
+    command = words[0] if len(words) == 1 else shlex.join(words)
+    code, output = _run_captured(command, cwd, args.timeout)
+    relative = cwd.relative_to(root).as_posix()
+    record: dict = {
+        "kind": "command", "command": command, "cwd": relative, "exitCode": code, "output": output,
+        "timeoutSeconds": int(args.timeout) if float(args.timeout).is_integer() else args.timeout,
+    }
+    if args.application:
+        record["application"] = args.application
+    if destination is not None:
+        count = _append_evidence(destination, args.criterion, record)
+        print(f"readiness: appended to evidence.{args.criterion} ({count} records) in {destination}", file=sys.stderr)
+    print(json_text(record), end="")
+    return 0
+
+
+def report_summary(receipt: dict) -> str:
+    """Short human summary of a stored report; the receipt paths are the full records."""
+    stored = read_json(receipt["report"])
+    counts = {"passed": 0, "failed": 0, "skipped": 0}
+    for value in stored["report"].values():
+        counts[status(value)] += 1
+    summary = receipt["summary"]
+    apps = ", ".join(stored.get("apps", {})) or "."
+    lines = [
+        f"Level {summary['achievedLevel']} - {summary['scorePercent']:.1f}%",
+        f"Criteria: {counts['passed']} passed, {counts['failed']} failed, {counts['skipped']} skipped (of {len(stored['report'])})",
+        f"Applications ({len(stored.get('apps', {}))}): {apps}",
+    ]
+    comparison = stored.get("comparison")
+    if comparison:
+        lines.append(f"Changed since previous report: {len(comparison['criteria'])} criteria, {len(comparison['applications'])} applications")
+    lines.extend([f"JSON: {receipt['report']}", f"Markdown: {receipt['markdown']}", "Full JSON: re-run with --json, or read the JSON file."])
+    return "\n".join(lines) + "\n"
 
 
 def run(args: argparse.Namespace) -> int:
@@ -96,7 +282,10 @@ def run(args: argparse.Namespace) -> int:
                 stream.write(content)
         print(json_text({"task": str(output / "assessment.md"), "evaluation": str(output / "evaluation.json"), "status": "awaiting_agent_evaluation", "criteria": len(criteria_by_id())}), end="")
     elif args.command == "report":
-        print(json_text(store_report(read_json(args.input), args.target, args.state_dir)), end="")
+        receipt = store_report(read_json(args.input), args.target, args.state_dir)
+        print(json_text(receipt) if args.json else report_summary(receipt), end="")
+    elif args.command == "capture":
+        return capture_command(args)
     else:
         repository = inspect_repository(args.target)
         previous = latest_report(repository, args.state_dir)
@@ -117,11 +306,17 @@ def run(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    shell_command = None
+    if argv[:1] == ["capture"] and "--" in argv:
+        split = argv.index("--")
+        argv, shell_command = argv[:split], argv[split + 1:]
     args = parser().parse_args(argv)
+    args.shell_command = shell_command
     try:
         return run(args)
     except (ValueError, OSError, KeyError, TypeError, OverflowError) as error:
-        if isinstance(error, ValidationError) or args.command == "report":
+        if (isinstance(error, ValidationError) and args.command != "capture") or args.command == "report":
             if not isinstance(error, ValidationError):
                 error = ReportError(str(error))
             for problem in error.problems:

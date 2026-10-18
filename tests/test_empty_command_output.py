@@ -67,7 +67,7 @@ class EmptyCommandOutputTests(unittest.TestCase):
         evaluation["evidence"]["lint_config"] = [evidence]
         source = self.base / "evaluation.json"
         source.write_text(json.dumps(evaluation))
-        self.cli("report", self.root, "--input", source, "--state-dir", self.state)
+        self.cli("report", self.root, "--input", source, "--state-dir", self.state, "--json")
         shown = self.cli("show", self.root, "--state-dir", self.state, "--json")
         self.assertEqual(shown["evidence"]["lint_config"], [evidence])
 

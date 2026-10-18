@@ -138,7 +138,7 @@ class RunnerContextTests(unittest.TestCase):
         evaluation["evidence"]["unit_tests_runnable"] = [evidence]
         source = self.base / "evaluation.json"
         source.write_text(json.dumps(evaluation))
-        self.cli("report", self.root, "--input", source, "--state-dir", self.state)
+        self.cli("report", self.root, "--input", source, "--state-dir", self.state, "--json")
         before = self.cli("show", self.root, "--state-dir", self.state, "--json")
         self.assertEqual(before["evidence"]["unit_tests_runnable"], [evidence])
         shutil.rmtree(target)

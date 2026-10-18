@@ -139,7 +139,7 @@ class WorkflowTests(unittest.TestCase):
         return path
 
     def submit(self, data):
-        result = self.cli("report", self.root, "--input", self.save_input(data), "--state-dir", self.state)
+        result = self.cli("report", self.root, "--input", self.save_input(data), "--state-dir", self.state, "--json")
         return json.loads(result.stdout)
 
     def reject_submission(self, data):

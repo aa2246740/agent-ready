@@ -41,6 +41,6 @@ python3 "$READINESS_CLI" prepare "$READINESS_TARGET" --output "$READINESS_WORK_N
 python3 "$READINESS_CLI" report "$READINESS_TARGET" --input "$READINESS_WORK_NEXT/evaluation.json" --state-dir "$READINESS_STATE"
 ```
 
-不要只把旧报告的分子改成 1。`--target-level` 以新报告的计算结果为准，`--all` 完成全部适用失败项或逐项记录阻碍；无新证据或进展时停止，不要把“无法保证”写成成功。
+不要只把旧报告的分子改成 1；任务里旧证据只是摘要，须重新核对，重评契约以新 `prepare` 的 assessment.md 为准。`--target-level` 以新报告的计算结果为准，`--all` 完成全部适用失败项或逐项记录阻碍；无新证据或进展时停止，不要把“无法保证”写成成功。
 
 最终汇报：实际变更、已运行验证、修复前后分数与等级、报告路径、未完成项及原因。区分“生成任务”“已修改”“验证通过”“复评通过”，只有最后一步证明 readiness 改善。差异清单见仓库 `docs/fidelity.md`。

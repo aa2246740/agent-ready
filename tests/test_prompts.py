@@ -119,13 +119,27 @@ class PromptContractTests(unittest.TestCase):
             "numerator null is allowed only for criteria marked [Skippable]",
             "its stated skip condition, its PREREQUISITE failing, or its stated N/A cases",
             "say which in the rationale",
-            "Do not convert an applicable failure, missing access that the criterion does not list as a skip reason, or an unevaluated item into a skip",
+            "Do not convert an applicable failure or an unevaluated item into a skip",
             "There is no per-application N/A",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, prompt)
         for discouragement in ("UNASSESSED is a deliberate invalid sentinel", "rarely", "avoid skipping", "prefer failing"):
             self.assertNotIn(discouragement, prompt)
+
+    def test_gh_skip_condition_covers_an_unreachable_repository(self):
+        prompt = self.assessment()
+        sentence = next(part for part in prompt.split(". ") if "not available or not authenticated" in part and "THIS repository" in part)
+        for expected in ("also applies when the CLI is authenticated but cannot reach THIS repository",
+                         "no remote, repository not found, no read permission"):
+            self.assertIn(expected, prompt)
+        self.assertIn("`gh`/`glab`", sentence)
+        # The old sentence that made agents score such criteria 0 is gone, and the criteria text is unchanged.
+        self.assertNotIn("missing access that the criterion does not list", prompt)
+        gh_skippable = [row for row in self.catalog["criteria"] if row.get("isSkippable") and "`gh`/`glab` CLI is not available or not authenticated" in row["instructions"]]
+        self.assertEqual(len(gh_skippable), 6)
+        for row in gh_skippable:
+            self.assertIn(row["instructions"], prompt)
 
     def test_command_bans_apply_only_to_unit_tests_runnable_evidence(self):
         adapter = self.adapter()
@@ -140,6 +154,16 @@ class PromptContractTests(unittest.TestCase):
         rest = adapter.replace(paragraph, "")
         for banned in ("`2>&1`", "head", "tee"):
             self.assertNotIn(banned, rest)
+
+    def test_timeout_mapping_and_capture_helper_are_explained_once_in_the_local_adapter(self):
+        prompt = self.assessment()
+        adapter = self.adapter(prompt)
+        self.assertEqual(prompt.count("Execute timeout field"), 2)  # criterion text + the one mapping sentence
+        mapping = next(line for line in adapter.splitlines() if line.startswith("timeoutSeconds ="))
+        for expected in ("limit your execution tool really enforced", "default included", "Execute timeout field", "`capture --target <target>",
+                         "--append-to <task-dir>/evaluation.json --criterion <id>", "124 = timed out", "the validator never uses it"):
+            self.assertIn(expected, mapping)
+        self.assertEqual(adapter.count("capture --target"), 1)
 
     def test_v2_cwd_rule_accepts_real_directories_and_keeps_the_cd(self):
         adapter = self.adapter()
@@ -195,7 +219,8 @@ class PromptContractTests(unittest.TestCase):
         self.assertIn("assessment.md", report)
         self.assertIn("Local adapter", report)
         self.assertIn("一次列出全部问题", report)
-        self.assertNotIn("timeout", report)  # The unit-test command bans live in assessment.md only.
+        self.assertIn("capture", report)
+        self.assertNotIn("2>&1", report)  # The unit-test command bans live in assessment.md only.
 
     def test_assessment_contains_every_original_rule_without_replacing_its_contract(self):
         prompt = self.assessment()
@@ -205,7 +230,7 @@ class PromptContractTests(unittest.TestCase):
             "re-read each unit_tests_runnable command and its output",
             "STOP and revise before publishing", "exact signal-weighted mean",
             "# Level", "# Applications", "# Criteria", "# Action Items",
-            "There is no Level 6", "replacing Factory's cloud store",
+            "There is no Level 6", "It replaces Factory's store_agent_readiness_report tool",
             "Level 1: 0–20%, Level 2: 20–40%, Level 3: 40–60%, Level 4: 60–80%, Level 5: 80–100%",
         ):
             self.assertIn(expected, prompt)
@@ -260,6 +285,40 @@ class PromptContractTests(unittest.TestCase):
             self.assertIn(row["description"], prompt)
             self.assertIn(row["instructions"], prompt)
 
+    def test_fix_prompt_keeps_rationale_and_instruction_once_but_not_old_evidence(self):
+        old_output = "OLD-COMMAND-OUTPUT-" + "x" * 2000
+        self.previous["evidence"]["lint_config"] = [
+            {"kind": "file", "path": "pyproject.toml", "line": 12, "note": "OLD-NOTE"},
+            {"kind": "command", "command": "ruff check .", "cwd": ".", "exitCode": 1, "output": old_output, "timeoutSeconds": 30},
+        ]
+        self.previous["report"]["lint_config"]["rationale"] = "No linter configured for the app."
+        prompt = fix_prompt(self.repository, self.previous, all_signals=True)
+        row = next(row for row in self.catalog["criteria"] if row["id"] == "lint_config")
+        self.assertEqual(prompt.count(row["instructions"]), 1)
+        self.assertEqual(prompt.count("Previous rationale: No linter configured for the app."), 1)
+        self.assertNotIn(old_output, prompt)
+        self.assertNotIn("OLD-NOTE", prompt)
+        self.assertIn("1 file, 1 command; cited pyproject.toml:12", prompt)
+        self.assertIn("full records are in the stored report", prompt)  # stated once in the preamble
+        self.assertEqual(prompt.count("full records are in the stored report"), 1)
+        # The re-evaluation contract is the prepare output, not a second copy here.
+        self.assertIn("run prepare with a NEW task directory outside the repository and follow its assessment.md", prompt)
+        self.assertNotIn("APPLICATIONS_IDENTIFIED", prompt)
+        # Every failing criterion is still selected by --all.
+        for key in ("lint_config", "type_check"):
+            self.assertIn(f"(`{key}`) [0/1]", prompt)
+        self.assertNotIn("(`readme`)", prompt)
+
+    def test_fix_all_is_much_shorter_than_one_copy_of_every_old_evidence_record(self):
+        for row in self.catalog["criteria"]:
+            self.previous["report"][row["id"]].update(numerator=0, denominator=1)
+            self.previous["evidence"][row["id"]] = [
+                {"kind": "command", "command": "git ls-files", "cwd": ".", "exitCode": 0, "output": "f" * 1500, "timeoutSeconds": 30}]
+        prompt = fix_prompt(self.repository, self.previous, all_signals=True)
+        instructions = sum(len(row["instructions"].encode()) + len(row["description"].encode()) for row in self.catalog["criteria"])
+        self.assertLess(len(prompt.encode()), instructions + 28 * 1024)
+        self.assertNotIn("f" * 100, prompt)
+
     def test_mixed_explicit_requests_explain_passing_and_skipped_items(self):
         # Original lines 497–501 require mentioning already-passing requests.
         prompt = fix_prompt(self.repository, self.previous, signals=["lint_config", "readme", "strict_typing"])
@@ -286,7 +345,7 @@ class PromptContractTests(unittest.TestCase):
         no_op = fix_prompt(self.repository, self.previous, signals=["readme"], instructions=request)
         self.assertIn(request, no_op)
 
-    def test_no_report_default_preserves_both_native_paths_and_embeds_full_assessment(self):
+    def test_no_report_default_preserves_both_native_paths_and_points_to_prepare(self):
         # Original lines 522–572 embed lN and differ after report/skip selection.
         prompt = fix_without_report_prompt(self.repository)
         self.assertIn("Generate a full report first", prompt)
@@ -299,11 +358,12 @@ class PromptContractTests(unittest.TestCase):
         self.assertIn("ONE AskUser question", skip_branch)
         self.assertIn("most impactful/common ones, up to 10", skip_branch)
         self.assertIn("host tool has a smaller limit", skip_branch)
+        # The generation contract is produced by `prepare`; it is pointed to, not embedded a second time.
         report_workflow = prompt.split("## Readiness Report Generation Instructions", 1)[1]
-        self.assertIn("First run the local prepare command", report_workflow)
-        self.assertIn("APPLICATIONS_IDENTIFIED: N", report_workflow)
-        for row in self.catalog["criteria"]:
-            self.assertIn(row["instructions"], report_workflow)
+        self.assertIn("Run `prepare` with a NEW task directory outside the repository", report_workflow)
+        self.assertIn("assessment.md", report_workflow)
+        self.assertNotIn("APPLICATIONS_IDENTIFIED", prompt)
+        self.assertLess(len(prompt.encode()), 16 * 1024)
         self.assertNotIn("readiness-report/SKILL.md", prompt)
         self.assertNotIn("Prior report:", prompt)
 
