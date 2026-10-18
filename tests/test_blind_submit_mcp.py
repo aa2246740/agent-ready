@@ -323,8 +323,11 @@ class SyntheticBlindSubmitTests(unittest.TestCase):
         self.assertEqual(missing, expected)
         self.assertEqual(len(missing), 85)
         self.assertEqual({entry["criterionId"] for entry in missing}, set(self.ids))
-        self.assertIn(f"{self.ids[0]}: synthetic-extra.md", answer["error"])
-        self.assertIn(f"{self.ids[-1]}: README.md", answer["error"])
+        self.assertIn(f"{self.ids[0]} evidence[1].path", answer["error"])
+        self.assertIn("synthetic-extra.md", answer["error"])
+        self.assertEqual(len(answer["diagnostics"]["problems"]), 50)
+        self.assertEqual(answer["diagnostics"]["problemCount"], 85)
+        self.assertEqual(answer["diagnostics"]["omittedProblemCount"], 35)
         self.assertFalse(answer["stop"])
 
     def test_successfully_read_files_are_excluded_from_all_unread_feedback(self):

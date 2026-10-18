@@ -14,6 +14,7 @@ from .prompts import assessment_prompt, fix_prompt, fix_without_report_prompt
 from .report import ReportError, json_text, latest_report, new_evaluation, read_json, render_markdown, store_report
 from .repository import ensure_external_output, inspect_repository
 from .scoring import score_report
+from .validation import ValidationError
 
 
 def parser() -> argparse.ArgumentParser:
@@ -72,11 +73,6 @@ def run(args: argparse.Namespace) -> int:
                     continue
                 if type(number) not in (int, float) or not math.isfinite(number):
                     raise ReportError(f"{key}: {field} must be a finite number")
-            numerator = value.get("numerator")
-            denominator = value.get("denominator")
-            if numerator is not None and type(numerator) in (int, float) and type(denominator) in (int, float):
-                if denominator <= 0 or numerator < 0 or numerator > denominator:
-                    raise ReportError("Invalid criterion score fraction")
         print(json_text(score_report(values)), end="")
     elif args.command == "prepare":
         repository = inspect_repository(args.target)
@@ -125,7 +121,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return run(args)
     except (ValueError, OSError, KeyError, TypeError, OverflowError) as error:
-        print(f"readiness: {error}", file=sys.stderr)
+        if isinstance(error, ValidationError) or args.command == "report":
+            if not isinstance(error, ValidationError):
+                error = ReportError(str(error))
+            for problem in error.problems:
+                print(f"readiness: {problem}", file=sys.stderr)
+            omitted = f" ({error.omitted_count} more not shown)" if error.omitted_count else ""
+            print(f"{error.problem_count} problems{omitted}; fix all and re-run {args.command}", file=sys.stderr)
+        else:
+            print(f"readiness: {error}", file=sys.stderr)
         return 2
 
 

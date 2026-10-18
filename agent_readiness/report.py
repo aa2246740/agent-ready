@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -15,12 +16,13 @@ from . import RUBRIC_VERSION, __version__
 from .application_scope import javascript_application_supported
 from .catalog import criteria_by_id, load_catalog
 from .condition_evidence import condition_errors
-from .repository import _git, canonicalize_origin, ensure_external_output, inspect_repository, validate_evidence
-from .runner_contract import java_test_execution, javascript_collection, python_collection_file, python_collection_matches_file
+from .repository import RepositoryError, _root_alias_relative, command_cwd, _git, canonicalize_origin, ensure_external_output, inspect_repository, validate_evidence
+from .runner_contract import java_test_execution, javascript_collection, python_collection_file, python_collection_matches_file, other_runner_error
 from .scoring import score_report, status
+from .validation import Problems, ValidationError
 
 
-class ReportError(ValueError):
+class ReportError(ValidationError):
     pass
 
 
@@ -72,8 +74,8 @@ def new_evaluation(repository: dict) -> dict:
         "repository": repository,
         "apps": {".": {"description": "TODO: discover independently deployable applications"}},
         "report": {
-            key: {"numerator": "UNASSESSED", "denominator": 1, "rationale": ""}
-            for key in criteria_by_id()
+            key: {"numerator": "UNASSESSED", "denominator": None if criterion["scope"] == "application" else 1, "rationale": ""}
+            for key, criterion in criteria_by_id().items()
         },
         "evidence": {key: [] for key in criteria_by_id()},
         "actionItems": [],
@@ -83,9 +85,6 @@ def new_evaluation(repository: dict) -> dict:
 _FORBIDDEN_COMMANDS = {"head", "tail", "tee", "timeout"}
 _SHELLS = {"sh", "bash", "zsh", "fish", "dash", "ksh", "cmd", "powershell", "pwsh"}
 _WRAPPERS = {"uv", "poetry", "pdm", "pipenv", "hatch"}
-_SAFE_ASSIGNMENT = re.compile(
-    r"^(?:PYTHONDONTWRITEBYTECODE=1|PYTEST_ADDOPTS=.*|CI=.*|NO_COLOR=.*|FORCE_COLOR=.*|TZ=.*|LANG=.*|LC_ALL=.*)$"
-)
 # Flags of `go build`/`go test` that take a separate value (`go help build`,
 # `go help testflag`). Boolean flags (-race, -v, -short, -cover, -json,
 # -failfast, -buildvcs ...) take none; `-C dir` is a retarget rejected earlier.
@@ -97,8 +96,6 @@ _GO_VALUE_FLAGS = {
     "-mutexprofile", "-mutexprofilefraction", "-o", "-outputdir", "-overlay", "-p", "-parallel", "-pgo",
     "-pkgdir", "-run", "-shuffle", "-skip", "-tags", "-timeout", "-toolexec", "-trace", "-vet",
 }
-_DRY_RUN_FLAGS = {"--no-run", "--dry-run", "--list-targets", "-n", "-N",
-                  "--list", "--list-tests", "--list-suites", "--show-only"}
 
 
 def _command_position_is_forbidden(words: list[str]) -> bool:
@@ -125,97 +122,85 @@ def _command_position_is_forbidden(words: list[str]) -> bool:
     return False
 
 
-def _root_alias_relative(destination: Path, root: Path) -> Path | None:
-    """Directory of ``destination`` relative to ``root`` when it is spelled through an alias of an ancestor of ``root``.
-
-    The only tolerated alias is a symlinked *ancestor* of the snapshot root
-    (``/tmp`` for ``/private/tmp/repo``): the destination must spell out the
-    root's own trailing components after that alias, and the alias must
-    resolve to the same ancestor. A symlink that merely points into the
-    repository (``/outside/link`` -> ``<root>/apps/web``), or at the root
-    itself, is not accepted. Components below the root are still checked for
-    symlinks by the caller.
-    """
-    real = root.resolve(strict=False)
-    for split in range(1, len(real.parts)):
-        head, tail = real.parts[:split], real.parts[split:]
-        for start in range(1, len(destination.parts) - len(tail) + 1):
-            if destination.parts[start:start + len(tail)] != tail:
-                continue
-            if Path(*destination.parts[:start]).resolve(strict=False) == Path(*head):
-                return Path(*destination.parts[start + len(tail):])
-    return None
-
-
-def _runner_context(command: str, cwd: str, root: Path | None, *, check_paths: bool) -> tuple[list[str], Path | None]:
-    """Parse one literal in-repository cd and retain the initial evidence cwd.
-
-    The second return value is the runner's directory relative to the recorded
-    snapshot root. Current reports reject symlinks in changed directory paths;
-    historical readback uses the original root without probing today's files.
-    This parses captured records only and never executes or rewrites them.
-    """
-    rejected = ([], None)
-    initial_relative = Path(cwd)
-    if initial_relative.is_absolute() or any(part in {"..", ".git"} for part in initial_relative.parts):
-        return rejected
-    runner_relative = initial_relative
-    # Pipes and merged stderr are rejected on the raw text. head/tail/tee/timeout
-    # are command names, so argument values such as `-k timeout` stay legal.
-    expansion = r"\$(?:[A-Za-z_0-9{(@*#?$!\-])"
-    if re.search(r"2>&1|\|", command) or re.search(expansion, command) or any(symbol in command for symbol in (";", "`", "\n", "\r", "<", ">")):
-        return rejected
+def _parse_runner_context(command: str, cwd: str, root: Path | None, *, check_paths: bool) -> tuple[list[str], Path]:
+    """Resolve captured cwd + one literal cd without executing either."""
+    if not isinstance(command, str) or not command.strip() or "\x00" in command:
+        raise ReportError("command is empty; record the actual runner command")
+    for symbol in ("2>&1", "|", ";", "`", "$(", "<", ">", "\n", "\r"):
+        if symbol in command:
+            name = "pipe" if symbol == "|" else "shell operator"
+            raise ReportError(f"{name} `{symbol!s}` not allowed in unit_tests_runnable evidence; record one direct runner command")
+    if re.search(r"\$(?:[A-Za-z_0-9{(@*#?$!\-])", command):
+        raise ReportError("shell expansion is not verifiable; use literal arguments")
+    if not isinstance(cwd, str) or not cwd or "\x00" in cwd or "\\" in cwd:
+        raise ReportError("cwd must record the shell's target-relative or absolute directory")
+    initial_path = Path(cwd)
+    if not initial_path.is_absolute() and any(part in {"..", ".git"} for part in initial_path.parts):
+        raise ReportError("cwd must not traverse parents or Git metadata; use an absolute shell directory")
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars="&")
         lexer.whitespace_split = True
         lexer.commenters = ""
         words = list(lexer)
-    except ValueError:
-        return rejected
+    except ValueError as exc:
+        raise ReportError(f"command quoting is invalid: {exc}; record valid literal shell syntax") from exc
     if _command_position_is_forbidden(words):
-        return rejected
+        raise ReportError("head/tail/tee/timeout cannot be the command; record the direct test runner and timeoutSeconds")
+    initial = initial_path if initial_path.is_absolute() else (root / initial_path if root is not None else initial_path)
+    resolved = initial
     if words and words[0] == "cd":
         if root is None or not root.is_absolute():
-            return rejected
+            raise ReportError("leading cd needs an absolute snapshot root; prepare the target first")
         prefix = 2 if len(words) > 1 and words[1] == "--" else 1
         if len(words) <= prefix + 2 or words[prefix + 1] != "&&":
-            return rejected
+            raise ReportError("leading cd must be `cd <literal directory> && <runner>`")
         destination = words[prefix]
         if not destination or destination.startswith("-") or any(symbol in destination for symbol in ("$", "~", "*", "?", "[", "]", "{", "}", "\\")):
-            return rejected
+            raise ReportError("cd directory must be a literal path; record the actual absolute or relative directory")
         path = Path(destination)
-        if any(part in {"..", ".git"} for part in path.parts):
-            return rejected
-        # A bare relative name can be redirected by CDPATH, which this evidence
-        # schema does not record. Absolute names and ./ prefixes bypass it.
-        if not path.is_absolute() and destination != "." and not destination.startswith("./"):
-            return rejected
-        initial = root / initial_relative
         resolved = path if path.is_absolute() else initial / path
-        try:
-            runner_relative = resolved.relative_to(root)
-        except ValueError:
-            # macOS /tmp is a symlink of /private/tmp: a snapshot root recorded
-            # as the resolved path and a cd target spelled through the symlink
-            # (or the reverse) are the same directory.
-            runner_relative = _root_alias_relative(path, root) if path.is_absolute() else None
-            if runner_relative is None:
-                return rejected
-        if check_paths and resolved != initial:
-            if root.is_symlink() or not root.is_dir():
-                return rejected
-            for relative in (initial_relative, runner_relative):
-                current = root
-                for part in relative.parts:
-                    current = current / part
-                    if current.is_symlink() or not current.is_dir():
-                        return rejected
         words = words[prefix + 2:]
-    if any("&" in word for word in words) or (words and words[0] in {
+    if not words or any("&" in word for word in words) or words[0] in {
         "!", "(", "{", "if", "for", "while", "until", "case", "function", "eval", "exec", "source", ".",
-    }):
-        return rejected
+    }:
+        raise ReportError("only one direct runner after an optional cd is allowed; remove extra shell commands")
+
+    def relative(path):
+        if root is None:
+            return None if path.is_absolute() else path
+        try:
+            return path.relative_to(root)
+        except ValueError:
+            return _root_alias_relative(path, root) if path.is_absolute() else None
+
+    # Check traversed in-target components before normalizing '..', so a
+    # symlink cannot disappear from the recorded path through parent traversal.
+    normalized = Path(os.path.normpath(str(resolved)))
+    for path in (initial, resolved, normalized):
+        in_target = relative(path)
+        if in_target is None:
+            continue
+        current = root
+        for part in in_target.parts:
+            if part == ".git":
+                raise ReportError("runner directory traverses Git metadata; choose an application directory")
+            if current is not None:
+                current = current / part
+                if check_paths and (current.is_symlink() or not current.is_dir()):
+                    raise ReportError(f"runner directory {current} is missing or traverses a symlink; use a real in-target directory")
+    runner_relative = relative(normalized)
+    if runner_relative is None or ".." in runner_relative.parts:
+        raise ReportError(f"runner directory {resolved} is outside the target; cd to the target or an application before running tests")
+    if check_paths and root is not None and (root.is_symlink() or not root.is_dir()):
+        raise ReportError("snapshot root is missing or a symlink; prepare its real directory")
     return words, runner_relative
+
+
+def _runner_context(command: str, cwd: str, root: Path | None, *, check_paths: bool) -> tuple[list[str], Path | None]:
+    try:
+        return _parse_runner_context(command, cwd, root, check_paths=check_paths)
+    except ReportError:
+        return [], None
 
 
 def _runner_words(command: str, cwd: str, root: Path | None) -> list[str]:
@@ -422,34 +407,6 @@ def _unwrap_wrapper(words: list[str], allowed_root: Path | None = None) -> list[
     return args or None
 
 
-def _recognized_other_runner(words: list[str]) -> bool:
-    executable = Path(words[0]).name
-    if any(word.partition("=")[0] in _DRY_RUN_FLAGS or word.startswith(("--list-", "--help-"))
-           or word in {"-h", "--print-labels"} for word in words):
-        return False
-    if executable in {"cargo", "dotnet", "mix", "zig", "swift", "flutter", "dart", "deno"}:
-        return words[1:2] == ["test"]
-    if executable == "ctest":
-        return True
-    if executable == "rspec":
-        return True
-    if executable == "phpunit":
-        return True
-    if executable in {"mocha", "ava", "tap"}:
-        return True
-    if executable == "bundle" and words[1:2] == ["exec"]:
-        inner = words[2:]
-        if not inner:
-            return False
-        if Path(inner[0]).name == "rake":
-            if any(token in {"-T", "--tasks", "-D", "--describe", "-P", "--prereqs"}
-                   for token in inner[1:]):
-                return False
-            return any(token == "test" or token.startswith("test:") for token in inner[1:])
-        return Path(inner[0]).name in {"rspec", "phpunit"} and _recognized_other_runner(inner)
-    return False
-
-
 def _inside_app(candidate: Path, app: Path) -> bool:
     if candidate.suffix == ".xml":
         candidate = candidate.parent
@@ -564,303 +521,384 @@ def _root_command_owns_app(executable: str, words: list[str], app: str) -> bool:
     return True
 
 
-def _test_evidence(items: list, numerator: int, apps: dict, root: Path | None = None, *, check_paths: bool = True) -> None:
-    commands = [item for item in items if item.get("kind") == "command" and item.get("exitCode") == 0]
-    if not commands:
-        raise ReportError("unit_tests_runnable pass requires a successful command and captured output")
-    passing_apps = set()
-    for item in commands:
-        command = item["command"]
-        timeout = item.get("timeoutSeconds")
-        if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
-            continue
-        words, runner_cwd = _runner_context(command, item["cwd"], root, check_paths=check_paths)
-        if not words:
-            continue
-        changed_directory = runner_cwd != Path(item["cwd"])
-        if Path(words[0]).name == "env":
-            words = words[1:]
-            if words and words[0].startswith("-"):
-                continue
-        assignments = []
-        while words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):
-            assignments.append(words[0])
-            words = words[1:]
-        # Environment assignments can redirect package managers, import paths,
-        # or wrapper dispatch. After a cd, only the path-neutral bytecode flag
-        # is verified. At the recorded cwd, allow known test flags and reject
-        # every other assignment, including import and cache redirection.
-        if changed_directory:
-            if any(value != "PYTHONDONTWRITEBYTECODE=1" for value in assignments):
-                continue
-        elif any(not _SAFE_ASSIGNMENT.fullmatch(value) for value in assignments):
-            continue
-        if not words:
-            continue
-        if Path(words[0]).name in _WRAPPERS:
-            if _wrapper_retargets(words) or _runner_retargets(words, root, runner_cwd):
-                continue
-            unwrapped = _unwrap_wrapper(words, None if root is None else root / runner_cwd)
-            if not unwrapped:
-                continue
-            words = unwrapped
-        executable = Path(words[0]).name
-        if executable in _SHELLS:
-            continue
-        if _runner_retargets(words, root, runner_cwd, allow_app_selectors=not changed_directory):
-            continue
-        if _runner_escapes(words, root, runner_cwd, check_paths=check_paths):
-            continue
-        output = item["output"]
-        if not isinstance(output, str) or not output.strip():
-            continue
-        if re.search(r"\b(?:collected\s+0\s+items|no tests (?:found|collected)|tests run:\s*0)\b", output, re.I):
-            continue
-        if executable in {"echo", "printf", "true", "false", "cat", "ls", "find", "rg", "grep"}:
-            continue
-        if any(word in words for word in ("--help", "--version")):
-            continue
-        if executable.startswith("python") or executable == "pytest":
-            # Native Python contract requires one file and collection only.
-            assigned_environment = dict(value.split("=", 1) for value in assignments)
-            addopts = assigned_environment.get("PYTEST_ADDOPTS", "")
-            try:
-                if _runner_retargets([words[0], *shlex.split(addopts)], root, runner_cwd,
-                                     allow_app_selectors=not changed_directory):
-                    continue
-            except ValueError:
-                continue
+def _test_record(item: dict, apps: dict, root: Path | None, *, check_paths: bool) -> str:
+    if item.get("exitCode") != 0 or type(item.get("exitCode")) is not int:
+        raise ReportError("exitCode must be 0; cite a successful runner command")
+    timeout = item.get("timeoutSeconds")
+    try:
+        valid_timeout = type(timeout) in (int, float) and math.isfinite(timeout) and timeout > 0
+    except OverflowError:
+        valid_timeout = False
+    if not valid_timeout:
+        raise ReportError("timeoutSeconds must be finite and positive; record the actual bounded timeout")
+    words, runner_cwd = _parse_runner_context(item.get("command"), item.get("cwd"), root, check_paths=check_paths)
+    initial_cwd = item["cwd"]
+    if root is not None:
+        initial_cwd = command_cwd(root, initial_cwd, check_paths=False)
+    # A shell starting outside and cd-ing to the root has the same selectors
+    # as a direct root invocation. The initial host directory is not app scope.
+    changed_directory = runner_cwd != Path(".") and runner_cwd != Path(initial_cwd)
+    if Path(words[0]).name == "env":
+        words = words[1:]
+        if words and words[0].startswith("-"):
+            raise ReportError("env accepts assignments only; remove env options that change dispatch or cwd")
+    assignments = {}
+    while words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):
+        name, value = words.pop(0).split("=", 1)
+        assignments[name] = value
+    for entry in assignments.get("PYTHONPATH", "").split(os.pathsep):
+        path = Path(entry)
+        outside = path.is_absolute() and (root is None or not path.resolve().is_relative_to(root.resolve()))
+        if ".." in path.parts or outside:
+            raise ReportError("PYTHONPATH retargets discovery outside the target; use in-target entries such as src")
+    try:
+        goflags = shlex.split(assignments.get("GOFLAGS", ""))
+    except ValueError as exc:
+        raise ReportError("GOFLAGS quoting is invalid; record valid flags") from exc
+    if any(word.partition("=")[0] == "-modfile" or word.startswith("-C") for word in goflags):
+        raise ReportError("GOFLAGS contains -modfile/-C scope retargeting; put verifiable selectors in the runner command")
+    if not words:
+        raise ReportError("assignments need a direct test runner command")
+    if Path(words[0]).name in _WRAPPERS:
+        if _wrapper_retargets(words) or _runner_retargets(words, root, runner_cwd):
+            raise ReportError("wrapper options retarget discovery; run from the target without --project/--directory selectors")
+        unwrapped = _unwrap_wrapper(words, None if root is None else root / runner_cwd)
+        if not unwrapped:
+            raise ReportError("wrapper must select a direct runner with valid literal run options; remove directory retargeting")
+        words = unwrapped
+    executable = Path(words[0]).name
+    if executable in _SHELLS or executable in _FORBIDDEN_COMMANDS:
+        raise ReportError("shell/utility wrappers are not direct test runners; record the runner itself")
+    if _runner_retargets(words, root, runner_cwd, allow_app_selectors=not changed_directory):
+        raise ReportError("runner arguments retarget discovery outside its scope; select tests within the runner directory")
+    if _runner_escapes(words, root, runner_cwd, check_paths=check_paths):
+        raise ReportError("runner arguments escape its directory or traverse a symlink; use real in-target paths")
+    output = item.get("output")
+    if not isinstance(output, str) or not output.strip():
+        raise ReportError("output must contain actual runner listing/collection/result lines; an empty capture cannot prove tests")
+    if re.search(r"\b(?:collected\s+0\s+items|0\s+tests?\s+(?:collected|listed)|no tests (?:found|collected)|tests run:\s*0)\b", output, re.I):
+        raise ReportError("runner reports zero tests; cite at least one collected/listed/executed test")
+    if executable in {"echo", "printf", "true", "false", "cat", "ls", "find", "rg", "grep"}:
+        raise ReportError("non-test command cannot prove runnable tests; cite a native runner")
+    if any(word in words for word in ("--help", "--version")):
+        raise ReportError("help/version does not prove runnable tests; use collection/listing or bounded execution")
+    if executable.startswith("python") or executable == "pytest":
+        addopts = assignments.get("PYTEST_ADDOPTS", "")
+        try:
             scope_words = [words[0], *shlex.split(addopts), *words[1:]]
-            if _runner_escapes(scope_words, root, runner_cwd, check_paths=check_paths):
-                continue
-            selected_file = python_collection_file(words, addopts=addopts)
-            if selected_file is None or not python_collection_matches_file(selected_file, output):
-                continue
-            collected = re.search(r"\b(?:collected\s+[1-9]\d*\s+items?|[1-9]\d*\s+tests?\s+collected)\b", output, re.I)
-            quiet_count = re.search(r"(?m)^\s*[^\s<>]+\.py:\s*[1-9]\d*\s*$", output)
-            if not collected and not quiet_count:
-                continue
-            if re.search(r"\b\d+\s+(?:passed|failed|xfailed|xpassed)\b|\bRan\s+\d+\s+tests?\b", output):
-                continue
-        elif executable in {"gradle", "gradlew", "mvn", "mvnw"}:
-            if not java_test_execution(words, output):
-                continue
-        elif executable in {"npm", "npx", "pnpm", "yarn", "bun", "jest", "vitest"}:
-            if not javascript_collection(words):
-                continue
-            if re.search(r"(?m)^\s*(?:PASS|FAIL)(?:\s|$)|\b\d+\s+(?:tests?\s+)?(?:passed|failed)\b", output):
-                continue
-        elif executable == "go":
-            own_flags = words[2:words.index("-args")] if "-args" in words else words[2:]
-            if words[1:2] != ["test"] or any(
-                word.partition("=")[0] in {"-c", "-list", "-test.list", "-h", "-n"} for word in own_flags
-            ):
-                continue
-            if re.search(r"\[no tests? (?:to run|files)\]", output, re.I):
-                tested_package = any(
-                    re.match(r"^ok\s+\S+\s+(?:\d+(?:\.\d+)?s|\(cached\))", line)
-                    and not re.search(r"\[no tests? (?:to run|files)\]", line, re.I)
-                    for line in output.splitlines()
-                )
-                for line in output.splitlines():
-                    try:
-                        event = json.loads(line)
-                    except (ValueError, TypeError):
-                        continue
-                    if isinstance(event, dict) and event.get("Action") == "pass" and event.get("Test"):
-                        tested_package = True
-                if not tested_package:
+        except ValueError as exc:
+            raise ReportError("PYTEST_ADDOPTS quoting is invalid; record valid literal options") from exc
+        if _runner_retargets([words[0], *shlex.split(addopts)], root, runner_cwd, allow_app_selectors=not changed_directory) or _runner_escapes(scope_words, root, runner_cwd, check_paths=check_paths):
+            raise ReportError("PYTEST_ADDOPTS retargets discovery; keep options within the selected application")
+        selected_file = python_collection_file(words, addopts=addopts)
+        if selected_file is None:
+            raise ReportError("Python requires collection only of one existing test file; use pytest --collect-only tests/test_example.py")
+        if not python_collection_matches_file(selected_file, output):
+            raise ReportError("Python output lists a different test file; capture collection of the selected file only")
+        collected = re.search(r"\b(?:collected\s+[1-9]\d*\s+items?|[1-9]\d*\s+tests?\s+collected)\b", output, re.I)
+        quiet_count = re.search(r"(?m)^\s*[^\s<>]+\.py:\s*[1-9]\d*\s*$", output)
+        if not collected and not quiet_count:
+            raise ReportError("Python output must report at least one collected test; capture pytest's collection lines")
+        if re.search(r"\b\d+\s+(?:passed|failed|xfailed|xpassed)\b|\bRan\s+\d+\s+tests?\b", output):
+            raise ReportError("Python evidence executed tests; use collection-only mode")
+    elif executable in {"gradle", "gradlew", "mvn", "mvnw"}:
+        if not java_test_execution(words, output):
+            raise ReportError("Java requires actual execution of one selected test class; use --tests plus --rerun-tasks or -Dtest=<class> and capture test results")
+    elif executable in {"npm", "npx", "pnpm", "yarn", "bun", "jest", "vitest"}:
+        if not javascript_collection(words):
+            raise ReportError("TS/JS requires runner-native collection/list mode; use jest --listTests or vitest list")
+        if re.search(r"(?m)^\s*(?:PASS|FAIL)(?:\s|$)|\b\d+\s+(?:tests?\s+)?(?:passed|failed)\b", output):
+            raise ReportError("TS/JS output reports executed tests; capture runner list/collection output only")
+    elif executable == "go":
+        own_flags = words[2:words.index("-args")] if "-args" in words else words[2:]
+        flags = {"-" + word.partition("=")[0].lstrip("-").removeprefix("test.") for word in own_flags if word.startswith("-")}
+        if words[1:2] != ["test"] or flags & {"-c", "-h", "-n"}:
+            raise ReportError("Go compile-only/help/dry-run is not test evidence; use go test -list <regex> <pkg> or bounded execution")
+        if "-list" in flags:
+            listed = any(re.match(r"^(?:Test|Example|Fuzz)\w*\s*$", line) for line in output.splitlines())
+            for line in output.splitlines():
+                try:
+                    event = json.loads(line)
+                except ValueError:
                     continue
-        elif not _recognized_other_runner(words):
-            continue
-        app = item.get("application")
-        candidates = [path for path in apps if runner_cwd == Path(path) or Path(path) in runner_cwd.parents]
-        inferred_app = max(candidates, key=lambda path: len(Path(path).parts)) if candidates else None
-        if app is not None:
-            if (app not in apps or (changed_directory and app != inferred_app)
-                    or (inferred_app not in {None, "."} and app != inferred_app)):
-                continue
+                if isinstance(event, dict) and re.match(r"^(?:Test|Example|Fuzz)\w*\s*$", str(event.get("Output", ""))):
+                    listed = True
+            if not listed:
+                raise ReportError("Go list output must enumerate at least one test; summary/build lines alone are insufficient")
         else:
-            if inferred_app is None:
-                continue
-            app = inferred_app
-        if executable.startswith("python") or executable == "pytest":
-            selected_path = Path(selected_file)
-            if selected_path.is_absolute():
-                if root is not None:
-                    try:
-                        selected_path = selected_path.relative_to(root)
-                    except ValueError:
-                        continue
-            else:
-                selected_path = runner_cwd / selected_path
-            owners = [path for path in apps if selected_path == Path(path) or Path(path) in selected_path.parents]
-            if owners and app != max(owners, key=lambda path: len(Path(path).parts)):
-                continue
-            config_targets = _flag_values(scope_words, {"-c", "--config-file", "--rootdir", "--confcutdir"}, {"-c"})
-            wrong_config = False
-            for target in config_targets:
-                config_path = Path(target)
-                if config_path.is_absolute() and root is not None:
-                    try:
-                        config_path = config_path.relative_to(root)
-                    except ValueError:
-                        wrong_config = True
-                        break
-                else:
-                    config_path = runner_cwd / config_path
-                config_owners = [path for path in apps if config_path == Path(path) or Path(path) in config_path.parents]
-                if config_owners and app != max(config_owners, key=lambda path: len(Path(path).parts)):
-                    wrong_config = True
-                    break
-            if wrong_config:
-                continue
-            if check_paths and root is not None:
-                candidate = root / selected_path
-                if not candidate.is_file():
+            tested = any(re.match(r"^ok\s+\S+\s+(?:\d+(?:\.\d+)?s|\(cached\))", line) and not re.search(r"\[no tests? (?:to run|files)\]", line, re.I) for line in output.splitlines())
+            for line in output.splitlines():
+                try:
+                    event = json.loads(line)
+                except ValueError:
                     continue
-        if len(apps) > 1 and runner_cwd == Path(".") and app != "." and not _root_command_owns_app(executable, words, app):
+                if isinstance(event, dict) and event.get("Action") == "pass" and event.get("Test"):
+                    tested = True
+            if not tested:
+                raise ReportError("Go output must report at least one passing test package/test event; testless or unmatched selections do not count")
+    else:
+        reason = other_runner_error(words, output)
+        if reason:
+            raise ReportError(reason)
+    app = item.get("application")
+    candidates = [path for path in apps if runner_cwd == Path(path) or Path(path) in runner_cwd.parents]
+    inferred_app = max(candidates, key=lambda path: len(Path(path).parts)) if candidates else None
+    if app is not None:
+        if (not isinstance(app, str) or app not in apps or (changed_directory and app != inferred_app)
+                or (inferred_app not in {None, "."} and app != inferred_app)):
+            raise ReportError(f"application {app!r} does not own runner directory {runner_cwd}; use its actual apps key")
+    else:
+        if inferred_app is None:
+            raise ReportError(f"runner directory {runner_cwd} has no application owner; identify the app with an explicit verifiable selector")
+        app = inferred_app
+    if executable.startswith("python") or executable == "pytest":
+        selected_path = Path(selected_file)
+        if selected_path.is_absolute():
+            if root is not None:
+                try:
+                    selected_path = selected_path.relative_to(root)
+                except ValueError as exc:
+                    raise ReportError("selected Python test file is outside the target; cite an in-target file") from exc
+        else:
+            selected_path = runner_cwd / selected_path
+        owners = [path for path in apps if selected_path == Path(path) or Path(path) in selected_path.parents]
+        if owners and app != max(owners, key=lambda path: len(Path(path).parts)):
+            raise ReportError(f"application {app!r} does not own Python test file {selected_path}; use the file's actual app")
+        config_targets = _flag_values(scope_words, {"-c", "--config-file", "--rootdir", "--confcutdir"}, {"-c"})
+        for target in config_targets:
+            config_path = Path(target)
+            if config_path.is_absolute() and root is not None:
+                try:
+                    config_path = config_path.relative_to(root)
+                except ValueError as exc:
+                    raise ReportError("Python configuration is outside the target; use in-target configuration") from exc
+            else:
+                config_path = runner_cwd / config_path
+            config_owners = [path for path in apps if config_path == Path(path) or Path(path) in config_path.parents]
+            if config_owners and app != max(config_owners, key=lambda path: len(Path(path).parts)):
+                raise ReportError("Python configuration belongs to another application; cite the selected app's configuration")
+        if check_paths and root is not None and not (root / selected_path).is_file():
+            raise ReportError(f"selected Python test file {selected_path} does not exist; cite an existing test file")
+    if len(apps) > 1 and runner_cwd == Path(".") and app != "." and not _root_command_owns_app(executable, words, app):
+        raise ReportError(f"root command does not select application {app}; use that app's package/module selector")
+    if executable in {"npm", "npx", "pnpm", "yarn", "bun", "jest", "vitest"}:
+        if not javascript_application_supported(app, words, runner_cwd, apps, root, output, check_paths=check_paths):
+            raise ReportError(f"TS/JS selectors/output do not substantiate application {app}; cite its runner and listed test paths")
+    return app
+
+
+def _test_evidence(items: list, numerator: int, apps: dict, root: Path | None = None, *, check_paths: bool = True) -> None:
+    passing_apps = set()
+    problems = Problems()
+    for index, item in enumerate(items):
+        if not isinstance(item, dict) or item.get("kind") != "command":
             continue
-        if executable in {"npm", "npx", "pnpm", "yarn", "bun", "jest", "vitest"}:
-            if not javascript_application_supported(app, words, runner_cwd, apps, root, output, check_paths=check_paths):
-                continue
-        passing_apps.add(app)
+        try:
+            passing_apps.add(_test_record(item, apps, root, check_paths=check_paths))
+        except (ReportError, RepositoryError) as exc:
+            problems.extend(exc, f"unit_tests_runnable evidence[{index}]: ")
+        except (ValueError, OSError, RuntimeError) as exc:
+            problems.add(f"unit_tests_runnable evidence[{index}]: cannot verify runner path/options: {exc}; use real literal paths and valid runner options")
     if len(passing_apps) < numerator:
-        raise ReportError("unit_tests_runnable needs a valid bounded runner command for each passing application; collection/execution must match its native language contract")
+        problems.add(f"unit_tests_runnable: needs a valid bounded runner command for each passing application; numerator={numerator}, verified applications={len(passing_apps)}; add native collection/listing/execution evidence for each passing app")
+        problems.raise_if_any(ReportError)
 
 
 def validate_evaluation(data: dict, target: str | Path) -> dict:
-    """Validate a complete assessment against the current working tree, without writing it."""
+    """Validate all independent input problems against the current snapshot."""
     current = inspect_repository(target)
+    problems = Problems()
+    if not isinstance(data, dict):
+        raise ReportError("evaluation: expected a JSON object; prepare and complete evaluation.json")
     previous = data.get("repository")
     if not isinstance(previous, dict):
-        raise ReportError("Missing repository snapshot; use prepare first")
-    for key in ("root", "identity", "head", "fingerprint"):
-        if _repository_field_matches(key, previous, current):
-            continue
-        raise ReportError(f"Repository {key} changed since prepare; re-prepare and re-evaluate changed evidence")
-    _validate_structure(data, Path(current["root"]), check_paths=True)
-    gaps = condition_errors(data, Path(current["root"]))
-    if gaps:
-        raise ReportError("Required-condition evidence failed: " + json.dumps(gaps, ensure_ascii=False))
+        problems.add("repository: missing repository snapshot; use prepare first")
+    else:
+        for key in ("root", "identity", "head", "fingerprint"):
+            if not _repository_field_matches(key, previous, current):
+                problems.add(f"repository.{key}: changed since prepare; re-prepare and re-evaluate changed evidence")
+    _validate_structure(data, Path(current["root"]), check_paths=True, problems=problems)
+    for gap in condition_errors(data, Path(current["root"])):
+        location = gap["criterionId"] + " " + gap["condition"]
+        if "evidenceIndex" in gap:
+            location += f" evidence[{gap['evidenceIndex']}]"
+        if gap.get("field"):
+            location += "." + gap["field"]
+        problems.add(f"{location}: Required-condition evidence failed: {gap['error']}")
+    problems.raise_if_any(ReportError)
     return current
 
 
-def _historical_evidence(items: list) -> None:
-    """Validate old evidence records without requiring deleted files to exist."""
-    for item in items:
+def _historical_evidence(items: list, root: Path | None = None) -> None:
+    """Validate stored shapes without requiring today's evidence files/cwds."""
+    problems = Problems()
+    for index, item in enumerate(items):
+        label = f"evidence[{index}]"
         if not isinstance(item, dict) or item.get("kind") not in {"file", "command"}:
-            raise ReportError("Invalid historical evidence kind")
-        path = item.get("path" if item["kind"] == "file" else "cwd")
-        if not isinstance(path, str) or not path or Path(path).is_absolute() or any(part in {"..", ".git"} for part in Path(path).parts) or "\\" in path or "\x00" in path:
-            raise ReportError("Invalid historical evidence path")
+            problems.add(f"{label}.kind: invalid historical evidence kind; preserve a file or command record")
+            continue
         if item["kind"] == "file":
+            path = item.get("path")
+            if not isinstance(path, str) or not path or Path(path).is_absolute() or any(part in {"..", ".git"} for part in Path(path).parts) or "\\" in path or "\x00" in path:
+                problems.add(f"{label}.path: invalid historical evidence path; use a repository-relative file")
             if not isinstance(item.get("note"), str) or not item["note"].strip():
-                raise ReportError("Historical file evidence requires a note")
+                problems.add(f"{label}.note: historical file evidence requires a note")
             if "line" in item and (type(item["line"]) is not int or item["line"] <= 0):
-                raise ReportError("Invalid historical file line")
+                problems.add(f"{label}.line: invalid historical file line; use a positive integer")
         else:
+            try:
+                command_cwd(root or Path("/"), item.get("cwd"), check_paths=False)
+            except RepositoryError as exc:
+                problems.extend(exc, f"{label}.cwd: ")
             if type(item.get("exitCode")) is not int:
-                raise ReportError("Invalid historical command exit code")
+                problems.add(f"{label}.exitCode: invalid historical command exit code; use an integer")
             if not isinstance(item.get("command"), str) or not item["command"].strip():
-                raise ReportError("Historical command evidence requires command and output")
+                problems.add(f"{label}.command: historical command evidence requires command and output")
             if not isinstance(item.get("output"), str):
-                raise ReportError("Historical command evidence requires recorded output as a string")
+                problems.add(f"{label}.output: historical command evidence requires recorded output as a string")
+    problems.raise_if_any(ReportError)
 
 
-def _validate_structure(data: dict, root: Path, *, check_paths: bool) -> None:
-    _reject_surrogates(data)
+def _validate_structure(data: dict, root: Path, *, check_paths: bool, problems: Problems | None = None) -> None:
+    own_problems = problems is None
+    if problems is None:
+        problems = Problems()
+    try:
+        _reject_surrogates(data)
+    except ReportError as exc:
+        problems.extend(exc, "evaluation: ")
     if type(data.get("schemaVersion")) is not int or data.get("schemaVersion") != 1 or data.get("rubricVersion") != RUBRIC_VERSION:
-        raise ReportError(f"Expected schemaVersion=1 and rubricVersion={RUBRIC_VERSION}")
+        problems.add(f"schemaVersion/rubricVersion: expected schemaVersion=1 and rubricVersion={RUBRIC_VERSION}; preserve prepared identifiers")
     metadata = data.get("repository")
-    if not isinstance(metadata, dict) or not isinstance(metadata.get("root"), str) or not Path(metadata["root"]).is_absolute():
-        raise ReportError("Invalid repository snapshot root")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    if not isinstance(metadata.get("root"), str) or not Path(metadata["root"]).is_absolute():
+        problems.add("repository.root: invalid repository snapshot root; use prepare first")
     if not isinstance(metadata.get("identity"), str) or not metadata["identity"]:
-        raise ReportError("Invalid repository identity")
+        problems.add("repository.identity: invalid repository identity; preserve prepared metadata")
     fingerprint = metadata.get("fingerprint")
     if not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
-        raise ReportError("Invalid repository fingerprint")
+        problems.add("repository.fingerprint: invalid repository fingerprint; preserve prepared metadata")
     apps = data.get("apps")
     if not isinstance(apps, dict) or not apps:
-        raise ReportError("apps must contain at least one application; use '.' for a single application")
-    app_roots = set()
+        problems.add("apps: must contain at least one application; use '.' for a single application")
+        apps = {}
+    app_roots, valid_apps = set(), {}
     for path, app in apps.items():
-        if not isinstance(path, str) or not path or Path(path).is_absolute() or ".." in Path(path).parts:
-            raise ReportError("Application paths must be relative directories inside the repository")
-        resolved = (root / path).resolve() if check_paths else root / path
-        if not resolved.is_relative_to(root) or (check_paths and not resolved.is_dir()) or ".git" in Path(path).parts or "\\" in path or "\x00" in path:
-            raise ReportError(f"Invalid application directory: {path}")
+        if not isinstance(path, str) or not path or Path(path).is_absolute() or ".." in Path(path).parts or ".git" in Path(path).parts or "\\" in path or "\x00" in path:
+            problems.add(f"apps[{path!r}]: application paths must be relative directories inside the repository; supply a real app directory")
+            continue
+        try:
+            resolved = (root / path).resolve() if check_paths else root / path
+            if not resolved.is_relative_to(root) or (check_paths and not resolved.is_dir()):
+                raise ValueError("directory is missing or outside target")
+        except (ValueError, OSError, RuntimeError):
+            problems.add(f"apps[{path!r}]: invalid application directory; choose an existing in-target directory")
+            continue
         if resolved in app_roots:
-            raise ReportError(f"Duplicate application directory: {path}")
+            problems.add(f"apps[{path!r}]: duplicate application directory; keep one canonical apps key")
         app_roots.add(resolved)
         description = app.get("description") if isinstance(app, dict) else None
         if not isinstance(description, str) or not description.strip() or description.startswith("TODO:"):
-            raise ReportError(f"Application {path} needs a real description")
-    report = data.get("report")
-    evidence = data.get("evidence")
+            problems.add(f"apps[{path!r}].description: needs a real description; describe the deployable application")
+        valid_apps[path] = app
     catalog = criteria_by_id()
-    for name, value in (("report", report), ("evidence", evidence)):
-        if not isinstance(value, dict) or set(value) != set(catalog):
-            missing = sorted(set(catalog) - set(value or {})) if isinstance(value, dict) else list(catalog)
-            extra = sorted(set(value or {}) - set(catalog)) if isinstance(value, dict) else []
-            raise ReportError(f"{name} must cover exactly {len(catalog)} criteria; missing={missing}, extra={extra}")
-    if check_paths:
-        all_items = []
-        for key, items in evidence.items():
-            if not isinstance(items, list) or not items:
-                raise ReportError(f"{key}: at least one evidence record is required, including failures and skips")
-            all_items.extend(items)
-        validate_evidence(root, all_items)
+    maps = {}
+    for name in ("report", "evidence"):
+        value = data.get(name)
+        if not isinstance(value, dict):
+            problems.add(f"{name}: must be an object covering exactly {len(catalog)} criteria; fill all prepared IDs")
+            value = {}
+        if set(value) != set(catalog):
+            problems.add(f"{name}: must cover exactly {len(catalog)} criteria; fill missing criterion entries and remove unknown IDs")
+        for key in sorted(catalog.keys() - value.keys()):
+            problems.add(f"{key}: missing {name} entry; fill the prepared criterion")
+        for key in sorted(value.keys() - catalog.keys()):
+            problems.add(f"{key}: unknown {name} criterion; remove the extra key and use the exact catalog ID")
+        maps[name] = value
+    report, evidence = maps["report"], maps["evidence"]
+    all_items, labels = [], []
     for key, criterion in catalog.items():
-        value = report[key]
-        if not isinstance(value, dict) or set(value) != {"numerator", "denominator", "rationale"}:
-            raise ReportError(f"{key}: expected numerator, denominator, rationale")
-        numerator, denominator = value["numerator"], value["denominator"]
-        expected = len(apps) if criterion["scope"] == "application" else 1
-        if type(denominator) is not int or denominator != expected:
-            raise ReportError(f"{key}: {criterion['scope']} denominator must equal {expected}")
-        if numerator is None:
-            if not criterion.get("isSkippable", False):
-                raise ReportError(f"{key}: this criterion cannot be skipped")
-            if check_paths and key == "monorepo_tooling" and len(apps) > 1:
-                raise ReportError("monorepo_tooling cannot be skipped when multiple applications exist")
-        elif type(numerator) is not int or not 0 <= numerator <= denominator:
-            raise ReportError(f"{key}: numerator must be an integer between 0 and {denominator}")
-        elif check_paths and numerator > 0:
-            prerequisite = {
-                "interactive_qa_runnable": "interactive_qa_exists",
-            }.get(key)
-            if prerequisite is not None:
-                previous = report.get(prerequisite, {}).get("numerator")
-                if type(previous) is not int or previous < numerator:
-                    raise ReportError(f"{key} requires {prerequisite} to cover at least as many applications")
-            if key == "agents_md_validation":
-                previous = report.get("agents_md", {}).get("numerator")
-                if type(previous) is not int or previous <= 0:
-                    raise ReportError("agents_md_validation requires agents_md to pass")
-        rationale = value["rationale"]
-        if not isinstance(rationale, str) or not rationale.strip() or len(rationale.encode("utf-16-le")) // 2 > 500:
-            raise ReportError(f"{key}: rationale must be nonempty and at most 500 UTF-16 code units")
+        value = report.get(key)
+        numerator = None
+        if key in report:
+            if not isinstance(value, dict):
+                problems.add(f"{key}.report: expected numerator, optional denominator, rationale; supply an evaluation object")
+            else:
+                if not {"numerator", "rationale"} <= value.keys() or value.keys() - {"numerator", "denominator", "rationale"}:
+                    problems.add(f"{key}.report: expected numerator, optional denominator, rationale; fill required fields and remove extras")
+                numerator = value.get("numerator")
+                expected = len(apps) if criterion["scope"] == "application" else 1
+                if value.get("denominator") is None:
+                    value["denominator"] = expected
+                if type(value.get("denominator")) is not int or value["denominator"] != expected:
+                    problems.add(f"{key}.denominator: {criterion['scope']} denominator must equal {expected}; omit it or set null for automatic filling")
+                if numerator is None:
+                    if not criterion.get("isSkippable", False):
+                        problems.add(f"{key}.numerator: this criterion cannot be skipped; assess it as an integer from 0 to {expected}")
+                    if check_paths and key == "monorepo_tooling" and len(apps) > 1:
+                        problems.add("monorepo_tooling.numerator: monorepo_tooling cannot be skipped when multiple applications exist; assess the monorepo tooling")
+                elif type(numerator) is not int or not 0 <= numerator <= expected:
+                    problems.add(f"{key}.numerator: must be an integer between 0 and {expected}; count passing applications/repository once")
+                elif check_paths and numerator > 0:
+                    prerequisite = {"interactive_qa_runnable": "interactive_qa_exists", "agents_md_validation": "agents_md"}.get(key)
+                    if prerequisite:
+                        previous = report.get(prerequisite)
+                        previous = previous.get("numerator") if isinstance(previous, dict) else None
+                        needed = numerator if key == "interactive_qa_runnable" else 1
+                        if type(previous) is not int or previous < needed:
+                            problems.add(f"{key}.numerator: {key} requires {prerequisite} to cover at least {needed}; substantiate the prerequisite or correct this numerator")
+                rationale = value.get("rationale")
+                if not isinstance(rationale, str) or not rationale.strip() or _SURROGATE.search(rationale) or len(rationale.encode("utf-16-le", errors="surrogatepass")) // 2 > 500:
+                    problems.add(f"{key}.rationale: must be nonempty and at most 500 UTF-16 code units without invalid surrogates; write a concise evidence-based rationale")
+        if key not in evidence:
+            continue
         items = evidence[key]
         if not isinstance(items, list) or not items:
-            raise ReportError(f"{key}: at least one evidence record is required, including failures and skips")
-        if not check_paths:
-            _historical_evidence(items)
-        if check_paths and key == "unit_tests_runnable" and numerator is not None and numerator > 0:
-            _test_evidence(items, numerator, apps, root, check_paths=check_paths)
+            problems.add(f"{key}.evidence: at least one evidence record is required, including failures and skips; cite actual files or commands")
+            continue
+        if check_paths:
+            all_items.extend(items)
+            labels.extend(f"{key} evidence[{index}]" for index in range(len(items)))
+        else:
+            try:
+                _historical_evidence(items, root)
+            except ReportError as exc:
+                problems.extend(exc, f"{key} ")
+        if check_paths and key == "unit_tests_runnable" and type(numerator) is int and numerator > 0 and valid_apps:
+            try:
+                _test_evidence(items, numerator, valid_apps, root, check_paths=check_paths)
+            except ReportError as exc:
+                problems.extend(exc)
+    if check_paths:
+        try:
+            validate_evidence(root, all_items, labels=labels)
+        except RepositoryError as exc:
+            problems.extend(exc)
     actions = data.get("actionItems", [])
-    if not isinstance(actions, list) or len(actions) > 3:
-        raise ReportError("actionItems must be a list of at most three concrete recommendations")
+    if not isinstance(actions, list):
+        problems.add("actionItems: must be a list of at most three concrete recommendations; supply a list")
+        actions = []
+    if len(actions) > 3:
+        problems.add("actionItems: must contain at most three concrete recommendations; select the highest-impact failures")
     selected = set()
-    for action in actions:
+    for index, action in enumerate(actions):
+        label = f"actionItems[{index}]"
         if not isinstance(action, dict) or set(action) != {"criterionId", "action", "reason"}:
-            raise ReportError("Each action item needs criterionId, action and reason")
+            problems.add(f"{label}: needs criterionId, action and reason; fill exactly these fields")
+            continue
         key = action["criterionId"]
-        if not isinstance(key, str) or key not in catalog or key in selected or status(report[key]) != "failed":
-            raise ReportError("Action items must select distinct, evaluated failing criteria")
-        if any(not isinstance(action[field], str) or not action[field].strip() for field in ("action", "reason")):
-            raise ReportError("Action items require a concrete action and reason")
-        selected.add(key)
+        value = report.get(key) if isinstance(key, str) else None
+        failed = isinstance(value, dict) and type(value.get("numerator")) is int and type(value.get("denominator")) is int and status(value) == "failed"
+        if not isinstance(key, str) or key not in catalog or key in selected or not failed:
+            problems.add(f"{label}.criterionId: must select distinct, evaluated failing criteria; choose a failed catalog ID")
+        else:
+            selected.add(key)
+        for field in ("action", "reason"):
+            if not isinstance(action[field], str) or not action[field].strip():
+                problems.add(f"{label}.{field}: must be nonempty; describe the concrete repair/reason")
+    if own_problems:
+        problems.raise_if_any(ReportError)
 
 
 def default_state_dir() -> Path:
@@ -955,6 +993,14 @@ def _escape(text: object) -> str:
     )
 
 
+def _code_span(value: object) -> str:
+    text = str(value).replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    fence = "`" * (1 + max((len(run) for run in re.findall(r"`+", text)), default=0))
+    if text.startswith("`") or text.endswith("`") or (text.startswith(" ") and text.endswith(" ") and text.strip()):
+        text = " " + text + " "
+    return fence + text + fence
+
+
 def _format_score_percent(percent: float, level: int) -> str:
     """Keep a value just below a level boundary from rounding up to that boundary."""
     thresholds = {1: 20.0, 2: 40.0, 3: 60.0, 4: 80.0}
@@ -1004,7 +1050,7 @@ def render_markdown(data: dict, previous: dict | None = None) -> str:
         "# Applications", "",
     ]
     for path, app in data["apps"].items():
-        lines.append(f"- `{_escape(path)}` — {_escape(app['description'])}")
+        lines.append(f"- {_code_span(path)} — {_escape(app['description'])}")
     lines.extend(["", "# Criteria", ""])
     catalog = load_catalog()
     for category in catalog["categories"]:
@@ -1018,10 +1064,10 @@ def render_markdown(data: dict, previous: dict | None = None) -> str:
             lines.append(f"- **{criterion['name']}** (`{key}`): {fraction} — {_escape(value['rationale'])}")
             for item in data["evidence"][key]:
                 if item["kind"] == "file":
-                    source = f"{item['path']}:{item.get('line', 1)} — {item['note']}"
+                    source = f"{_code_span(str(item['path']) + ':' + str(item.get('line', 1)))} — {_escape(item['note'])}"
                 else:
-                    source = f"{item['command']} [cwd={item['cwd']}, exit={item['exitCode']}] — {item['output']}"
-                lines.append(f"  Evidence: {_escape(source)}")
+                    source = f"{_code_span(item['command'])} [cwd={_code_span(item['cwd'])}, exit={item['exitCode']}] — {_escape(item['output'])}"
+                lines.append(f"  Evidence: {source}")
         lines.append("")
     lines.extend(["# Action Items", ""])
     failures = [row for row in catalog["criteria"] if status(data["report"][row["id"]]) == "failed"]
@@ -1049,7 +1095,7 @@ def render_markdown(data: dict, previous: dict | None = None) -> str:
             old, new = change["before"], change["after"]
             action = "added" if old is None else "removed" if new is None else "updated"
             description = new["description"] if new is not None else old["description"]
-            lines.append(f"- Application {action}: `{_escape(change['path'])}` — {_escape(description)}")
+            lines.append(f"- Application {action}: {_code_span(change['path'])} — {_escape(description)}")
         if not comparison["criteria"] and not comparison["applications"]:
             lines.append("No application or score changes.")
     lines.extend(["", "Local report; evidence and scoring are reproducible. Criterion judgments are supplied by the evaluating agent.", ""])

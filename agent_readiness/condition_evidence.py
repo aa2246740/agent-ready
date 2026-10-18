@@ -27,60 +27,36 @@ CONDITIONS = {
 
 INSTRUCTIONS = """### Required-condition evidence (local submission extension)
 
-For a positive dependency_update_automation or alerting_configured judgment,
-attach support objects to the relevant evidence records. Each support is
-{"condition":"<condition below>","quote":"verbatim source excerpt","facts":{...}}.
-Use one support per record; repeat a file record for different conditions.
-For alerting_configured in a multi-application repository, each support also
-needs application: <exact apps key>. Each counted passing application needs its
-own connected chain; evidence for one app must not be counted for another.
-For a single application this field may be omitted. A shared service can cover
-multiple apps only when its actual wiring supports each, cited separately.
-File quotes must occur starting on the cited line (line is required here);
-command quotes must occur in actual successful captured output. Every fact
-except trigger kind must occur literally in that quote. Never invent captures,
-PRs, enabled state, quotes, or operational history to satisfy this contract.
+Positive dependency_update_automation needs dependency_configuration {updater}
+and dependency_pull_request {updater, url, author, dependency}. Cite an actual
+updater-created dependency PR for this repository; configuration alone is not
+proof. A merged PR, auto-merge and deployment are not additional requirements.
+Positive alerting_configured needs a connected chain: alert_rule {handler,
+notifier}, automatic_trigger {kind, registration, handler}, alert_delivery
+{notifier}. kind is schedule/event/process/service. Cite enabled automatic
+wiring; a commented/disabled trigger, workflow_dispatch alone, --once or a
+single test message does not prove automatic operation.
 
-dependency_update_automation requires BOTH:
-- dependency_configuration: facts {"updater":"name as present in source"}.
-- dependency_pull_request: facts {"updater":"same name", "url":"actual PR URL",
-  "author":"actual author", "dependency":"actual dependency name"}. Cite an
-  observed dependency-update PR created by that updater for THIS repository.
-  A config, template, example, planned PR or manually created unrelated PR is
-  insufficient. Match configuration to the PR author and actual dependency
-  change. A merged PR, auto-merge, deployment and default-branch proof are NOT
-  additional native requirements. Existing authentic records are usable;
-  missing history/access is not evidence of a PR and does not permit a skip.
+Each cited record has support {condition, quote, facts}; use one condition per
+record. File quote must start on its cited line; command quote must occur in
+successful captured output. Quotes remain verbatim. Facts match without case
+sensitivity; updater may also match the cited config filename (dependabot.yml,
+renovate.json/json5, .renovaterc). dependabot[bot]/app/dependabot and
+renovate[bot]/app/renovate identify their corresponding updater. Other facts
+must occur in the quote, except trigger kind. Configuration/PR updater and
+trigger/rule/notifier identities must connect. Multi-app alert support needs
+application: <exact apps key>, with a separate connected chain for each passing
+app. Single-app support may omit application. Errors identify all gaps so you
+can correct the same submission. Historical reports are not revalidated.
 
-alerting_configured requires a CONNECTED automatic notification chain:
-- alert_rule: facts {"handler":"check/handler identity", "notifier":"sender identity"}.
-- automatic_trigger: facts {"kind":"schedule|event|process|service",
-  "registration":"actual enabled registration excerpt", "handler":"same handler"}.
-- alert_delivery: facts {"notifier":"same sender"}.
-Trace an enabled scheduler/event/subscription/startup registration through the
-rule to its configured notification destination. Source wiring or captured
-active configuration may establish this; no particular vendor or live incident
-is required. A monitor script, commented/planned/disabled trigger, manual
-workflow_dispatch alone, manual --once command or one successful test message
-does NOT establish the automatic trigger. Do not relabel a manual trigger as an
-automatic kind. Facts must describe actual source relationships, not keywords.
-
-The validator checks required conditions, exact quotes and matching identities;
-it cannot authenticate external captures or prove arbitrary code is active.
-The evaluating agent remains responsible for semantic/provenance review. If a
-required fact cannot be substantiated, explain the limitation and judge using
-the native rule; never fabricate evidence or silently default the numerator.
-Submission errors enumerate both criteria's gaps for correction in the SAME
-session. Historical stored reports are read without retroactive revalidation.
-
-Preserve native boundaries elsewhere: a wired custom permanent kill switch
-can meet feature_flag_infrastructure; documented flag lifecycle/cleanup is
-expressly sufficient for dead_feature_flag_detection when its prerequisite
-passes. release_automation checks an automated pipeline, including approval or
-manual dispatch followed by automated steps; it does NOT require a historical
-successful deployment. Product analytics can be page analytics when actually
-wired into the application; do not invent a minimum event count or claim live
-ingestion from configuration. Explain provider-equivalence interpretations.
+Never invent PRs, excerpts, enabled state or operational history. The validator
+checks captures and identities, not arbitrary code semantics or external
+history; the evaluator must review their meaning and provenance.
+Preserve native boundaries: a wired permanent kill switch can satisfy feature
+flag infrastructure; documented flag lifecycle/cleanup can suffice when its
+prerequisite passes. Release automation does NOT require a historical
+successful deployment. Product analytics can be page analytics wired into the
+application, without a minimum event count or invented ingestion proof.
 """
 
 
@@ -270,7 +246,8 @@ def _automatic_trigger_error(quote: str, registration: str, path: str | None = N
     positions = []
     start = 0
     while True:
-        found = quote.find(registration, start)
+        match = re.search(re.escape(registration), quote[start:], re.I)
+        found = start + match.start() if match else -1
         if found < 0:
             break
         positions.append(found)
@@ -290,6 +267,31 @@ def _automatic_trigger_error(quote: str, registration: str, path: str | None = N
     return None
 
 
+_UPDATER_FILES = {
+    "dependabot": {"dependabot.yml", "dependabot.yaml"},
+    "renovate": {"renovate.json", "renovate.json5", ".renovaterc", ".renovaterc.json", ".renovaterc.json5"},
+}
+
+
+def _identity(value: str) -> str:
+    folded = value.casefold()
+    for updater in _UPDATER_FILES:
+        if folded in {updater + "[bot]", "app/" + updater}:
+            return updater
+    return folded
+
+
+def _fact_matches(name: str, value: str, quote: str, item: dict) -> bool:
+    if value.casefold() in quote.casefold():
+        return True
+    if name != "updater":
+        return False
+    updater = _identity(value)
+    if item.get("kind") == "file" and Path(item.get("path", "")).name.casefold() in _UPDATER_FILES.get(updater, set()):
+        return True
+    return any(alias in quote.casefold() for alias in (updater + "[bot]", "app/" + updater))
+
+
 def condition_errors(data: dict, root: Path) -> list[dict]:
     """Collect all known condition errors, without writing or changing scores."""
     errors = []
@@ -301,14 +303,20 @@ def condition_errors(data: dict, root: Path) -> list[dict]:
         if not isinstance(value, dict) or type(value.get("numerator")) is not int or value["numerator"] <= 0:
             continue
 
-        def error(condition, message):
-            errors.append({"criterionId": key, "condition": condition, "error": message})
+        current_index = None
+
+        def error(condition, message, field="support"):
+            problem = {"criterionId": key, "condition": condition, "field": field, "error": message}
+            if current_index is not None:
+                problem["evidenceIndex"] = current_index
+            errors.append(problem)
 
         proven = {condition: [] for condition in required}
         items = evidence.get(key)
         if not isinstance(items, list):
             items = []
         for index, item in enumerate(items):
+            current_index = index
             if not isinstance(item, dict) or "support" not in item:
                 continue
             support = item["support"]
@@ -332,10 +340,10 @@ def condition_errors(data: dict, root: Path) -> list[dict]:
                 error(label, "unknown condition for this criterion")
                 continue
             if not isinstance(quote, str) or not quote.strip() or len(quote) > 65536:
-                error(condition, "quote must be a nonempty verbatim excerpt of at most 65536 characters")
+                error(condition, "quote must be a nonempty verbatim excerpt of at most 65536 characters; cite the actual source excerpt", "support.quote")
                 continue
             if not isinstance(facts, dict) or set(facts) != set(required[condition]):
-                error(condition, "facts requires exactly: " + ", ".join(required[condition]))
+                error(condition, "facts requires exactly: " + ", ".join(required[condition]) + "; fill each required source value", "support.facts")
                 continue
             if any(not isinstance(v, str) or not v.strip() or v.strip().lower() in {"unknown", "todo", "n/a", "..."} for v in facts.values()):
                 error(condition, "facts must be concrete nonempty source values")
@@ -346,10 +354,14 @@ def condition_errors(data: dict, root: Path) -> list[dict]:
                 error(condition, "cannot verify source quote: " + str(exc))
                 continue
             if not matches:
-                error(condition, "quote does not match the cited file line or successful command output")
+                error(condition, "quote does not match the cited file line or successful command output; copy a verbatim excerpt and correct the cited line", "support.quote")
                 continue
-            if any(v not in quote for k, v in facts.items() if not (condition == "automatic_trigger" and k == "kind")):
-                error(condition, "each fact must occur literally in its source quote (except trigger kind)")
+            missing_facts = [name for name, fact in facts.items()
+                             if not (condition == "automatic_trigger" and name == "kind")
+                             and not _fact_matches(name, fact, quote, item)]
+            if missing_facts:
+                for name in missing_facts:
+                    error(condition, f"fact {name}={facts[name]!r} does not match the source quote or allowed updater filename/author alias; cite its actual source value", "support.facts." + name)
                 continue
             if condition == "dependency_pull_request":
                 try:
@@ -363,7 +375,7 @@ def condition_errors(data: dict, root: Path) -> list[dict]:
                 if not re.search(r"/(?:pull|pulls|merge_requests|mr)/[1-9]\d*(?:/|$)", url.path, re.I):
                     error(condition, "requires a pull or merge request URL; config alone is insufficient")
                     continue
-            if condition == "automatic_trigger" and facts["kind"] not in {"schedule", "event", "process", "service"}:
+            if condition == "automatic_trigger" and facts["kind"].casefold() not in {"schedule", "event", "process", "service"}:
                 error(condition, "requires an enabled automatic trigger; manual/test-only delivery is insufficient")
                 continue
             if condition == "automatic_trigger":
@@ -376,16 +388,17 @@ def condition_errors(data: dict, root: Path) -> list[dict]:
                     error(condition, trigger_error)
                     continue
             proven[condition].append(dict(facts, _application=application))
+        current_index = None
         for condition, facts in proven.items():
             if not facts:
                 error(condition, "positive judgment lacks verified required-condition evidence")
         if all(proven.values()):
             if key == "dependency_update_automation":
-                linked = any(a["updater"] == b["updater"] for a in proven["dependency_configuration"] for b in proven["dependency_pull_request"])
+                linked = any(_identity(a["updater"]) == _identity(b["updater"]) for a in proven["dependency_configuration"] for b in proven["dependency_pull_request"])
             else:
                 passing_apps = {a["_application"]
                                 for a in proven["alert_rule"] for b in proven["automatic_trigger"] for c in proven["alert_delivery"]
-                                if a["handler"] == b["handler"] and a["notifier"] == c["notifier"]
+                                if a["handler"].casefold() == b["handler"].casefold() and a["notifier"].casefold() == c["notifier"].casefold()
                                 and a["_application"] == b["_application"] == c["_application"]}
                 linked = bool(passing_apps)
                 if len(passing_apps) < value["numerator"]:

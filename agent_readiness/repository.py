@@ -17,8 +17,10 @@ from collections import deque
 from collections.abc import Mapping
 from urllib.parse import urlsplit, urlunsplit
 
+from .validation import Problems, ValidationError
 
-class RepositoryError(ValueError):
+
+class RepositoryError(ValidationError):
     """The repository or a supplied evidence/output path is invalid."""
 
 
@@ -323,35 +325,89 @@ def _validate_line(path: Path, requested_line: int) -> None:
         raise RepositoryError("File evidence line does not exist")
 
 
-def validate_evidence(root: str | os.PathLike[str], evidence: object) -> None:
-    """Validate one evidence object (or a list) without executing commands."""
+def _root_alias_relative(destination: Path, root: Path) -> Path | None:
+    """Allow an alias of a root ancestor, never an alias pointing into the root."""
+    real = root.resolve(strict=False)
+    for split in range(1, len(real.parts)):
+        head, tail = real.parts[:split], real.parts[split:]
+        for start in range(1, len(destination.parts) - len(tail) + 1):
+            if destination.parts[start:start + len(tail)] != tail:
+                continue
+            if Path(*destination.parts[:start]).resolve(strict=False) == Path(*head):
+                return Path(*destination.parts[start + len(tail):])
+    return None
+
+
+def command_cwd(root: Path, value: object, *, check_paths: bool = True) -> str:
+    """Normalize an absolute in-target cwd; preserve outside absolute spellings.
+
+    Outside directories are not part of the snapshot and may no longer exist.
+    Do not resolve symlinks below the root: the runner contract checks them.
+    """
+    if not isinstance(value, str) or not value or "\x00" in value or "\\" in value or re.match(r"^[A-Za-z]:", value):
+        raise RepositoryError("cwd must be a nonempty target-relative or absolute directory; record the shell's actual directory")
+    path = Path(value)
+    if path.is_absolute():
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            relative = _root_alias_relative(path, root)
+        if relative is None:
+            return value
+        value = relative.as_posix()
+    _relative_parts(value, allow_dot=True)
+    if check_paths:
+        _evidence_path(root, value, directory=True)
+    return value
+
+
+def validate_evidence(root: str | os.PathLike[str], evidence: object, *, labels: list[str] | None = None) -> None:
+    """Validate all fields/records without executing commands; collect diagnostics."""
     repository_root = _root(root)
     owners: dict[Path, Path] = {repository_root: repository_root}
     cache: dict[Path, set[bytes]] = {}
+    problems = Problems()
     items = evidence if isinstance(evidence, list) else [evidence]
-    for item in items:
+    for index, item in enumerate(items):
+        label = labels[index] if labels is not None else f"evidence[{index}]"
         if not isinstance(item, Mapping):
-            raise RepositoryError("Evidence must be an object")
+            problems.add(f"{label}: must be an object; supply a file or command record")
+            continue
         if item.get("kind") == "file":
-            path = _evidence_path(repository_root, item.get("path"))
+            path = None
+            try:
+                path = _evidence_path(repository_root, item.get("path"))
+                if _ensure_evidence_snapshotted(repository_root, item["path"], owners, cache) != path:
+                    raise RepositoryError("File evidence changed during validation")
+            except (ValueError, OSError) as exc:
+                path = None
+                problems.add(f"{label}.path: {exc}; cite an existing snapshotted repository file")
             if not _nonempty(item.get("note")):
-                raise RepositoryError("File evidence requires a nonempty note")
-            if "line" in item and (type(item["line"]) is not int or item["line"] < 1):
-                raise RepositoryError("File evidence line must be a positive integer")
-            if _ensure_evidence_snapshotted(repository_root, item["path"], owners, cache) != path:
-                raise RepositoryError("File evidence changed during validation")
+                problems.add(f"{label}.note: must be nonempty; describe what the file proves")
             if "line" in item:
-                _validate_line(path, item["line"])
+                if type(item["line"]) is not int or item["line"] < 1:
+                    problems.add(f"{label}.line: must be a positive integer; cite an existing line")
+                elif path is not None:
+                    try:
+                        _validate_line(path, item["line"])
+                    except RepositoryError as exc:
+                        problems.add(f"{label}.line: {exc}; cite an existing line")
         elif item.get("kind") == "command":
             if not _nonempty(item.get("command")):
-                raise RepositoryError("Command evidence requires a command")
-            _evidence_path(repository_root, item.get("cwd"), directory=True)
+                problems.add(f"{label}.command: must be nonempty; record the actual command")
+            try:
+                normalized = command_cwd(repository_root, item.get("cwd"))
+                if isinstance(item, dict):
+                    item["cwd"] = normalized
+            except (ValueError, OSError) as exc:
+                problems.add(f"{label}.cwd: {exc}; record a target-relative or absolute shell directory")
             if type(item.get("exitCode")) is not int:
-                raise RepositoryError("Command evidence exitCode must be an integer")
+                problems.add(f"{label}.exitCode: must be an integer; record the actual exit code")
             if not isinstance(item.get("output"), str):
-                raise RepositoryError("Command evidence requires recorded output as a string")
+                problems.add(f"{label}.output: must be a string; record actual output, including an empty string when silent")
         else:
-            raise RepositoryError("Evidence kind must be 'file' or 'command'")
+            problems.add(f"{label}.kind: must be 'file' or 'command'; choose the actual evidence type")
+    problems.raise_if_any(RepositoryError)
 
 
 def ensure_external_output(

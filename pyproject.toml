@@ -26,17 +26,5 @@ include = ["agent_readiness*"]
 [tool.setuptools.package-data]
 agent_readiness = ["data/*.json"]
 
-# Source files that are not inside the import package. setuptools records these
-# in the sdist; there is no MANIFEST.in in this repository.
-[tool.setuptools.data-files]
-tools = ["tools/*.py"]
-scripts = ["scripts/*.py"]
-docs = ["docs/*.md"]
-"skills/agent-readiness" = ["skills/agent-readiness/*.md"]
-"skills/readiness-report" = ["skills/readiness-report/*.md"]
-"skills/readiness-fix" = ["skills/readiness-fix/*.md"]
-evidence = ["evidence/*.json"]
-"share/agent-readiness" = ["requirements-dev.txt", "AGENTS.md"]
-
 [tool.pytest.ini_options]
 pythonpath = [".", "tests"]
