@@ -62,4 +62,4 @@ python3 -m unittest discover -s tests -v
 
 公开目录包含普通回归测试，不包含提取的原版函数、第三方二进制或原始研究包。测试范围和结果见[验证说明](docs/validation.md)。
 
-本项目有权授权的自有代码采用 [Apache-2.0](LICENSE)；规则文本、适配提示词等第三方内容明确排除，见 [许可范围](LICENSE-SCOPE.md)和[来源说明](NOTICE.md)。本仓库并非所有文件都采用 Apache-2.0，公开可见性和新建 Git 历史不改变第三方授权状态。本项目独立维护，不隶属于 Factory AI，也不代表第三方背书。
+本项目有权授权的自有代码采用 [Apache-2.0](LICENSE)；规则文本、适配提示词等第三方内容明确排除，见 [许可范围](LICENSE-SCOPE.md)和[来源说明](NOTICE.md)。本仓库并非所有文件都采用 Apache-2.0，公开可见性和新建 Git 历史不改变第三方授权状态。本项目独立维护，与规则来源方没有隶属关系，也不代表第三方背书（见[来源说明](NOTICE.md)）。

@@ -31,7 +31,7 @@ CAPTURE_TIMEOUT_EXIT = 124
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(description="Agent-led readiness workflows, pinned to Droid 0.240.0. No model API is called by this CLI.")
+    root = argparse.ArgumentParser(description="Agent-led readiness workflows, pinned to the 0.240.0 rubric. No model API is called by this CLI.")
     root.add_argument("--version", action="version", version=__version__)
     commands = root.add_subparsers(dest="command", required=True)
     catalog = commands.add_parser("catalog", help="Print the exact versioned rule catalog")

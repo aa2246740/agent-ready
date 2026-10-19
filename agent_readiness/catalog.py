@@ -1,4 +1,4 @@
-"""Load the versioned rubric statically recovered from Droid's public CLI."""
+"""Load the versioned rubric statically recovered from the upstream public CLI (see NOTICE.md)."""
 
 from copy import deepcopy
 from functools import lru_cache

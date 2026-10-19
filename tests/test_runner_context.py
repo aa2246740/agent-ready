@@ -1,7 +1,7 @@
 """Real bounded Go executions plus explicit same-cwd evidence compatibility.
 
 Full report judgments are synthetic schema fixtures. Go runner output is captured
-from real child processes; no model API or Factory backend is used here.
+from real child processes; no model API or cloud backend is used here.
 """
 
 import json

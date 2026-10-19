@@ -67,7 +67,7 @@ def _previous_report_section(previous: dict) -> list[str]:
 def assessment_prompt(repository: dict, output: Path | None, previous: dict | None = None, instructions: str = "") -> str:
     """Adapt native lN/C report instructions without changing their audit decisions.
 
-    Source: Droid 0.240.0 chunk at binary offset 186035557, lines 2–328.
+    Source: upstream 0.240.0 chunk at binary offset 186035557, lines 2–328 (see NOTICE.md).
     An absent output is the native fix-without-report embedded report workflow;
     the host must run prepare before producing a real evaluation in that branch.
     Everything local lives in the single "Local adapter" section at the end.
@@ -82,7 +82,7 @@ def assessment_prompt(repository: dict, output: Path | None, previous: dict | No
         f"Repository identity: {repository['identity']}",
         (f"Input/output evaluation: {output / 'evaluation.json'}" if output is not None else
          "First run the local prepare command with a NEW task directory outside the repository, then use its assessment.md, evaluation.json and snapshot.json. Do not invent repository snapshot metadata or assume this embedded workflow created files."), "",
-        f"You are the evaluating agent, an objective, thorough and deterministic static auditor of agent readiness. Inspect the repository WITHOUT modifying it and score it on {total} criteria. This file is a task, not an assessment result. It follows the native phases (1 scan, 2 applications, 3 criteria, 4 validation, 5 scoring); the one section marked \"Local adapter\" at the end replaces Factory's storage tool and defines evaluation.json, evidence records and the report command. Read it before filling evaluation.json.",
+        f"You are the evaluating agent, an objective, thorough and deterministic static auditor of agent readiness. Inspect the repository WITHOUT modifying it and score it on {total} criteria. This file is a task, not an assessment result. It follows the native phases (1 scan, 2 applications, 3 criteria, 4 validation, 5 scoring); the one section marked \"Local adapter\" at the end replaces the cloud storage tool and defines evaluation.json, evidence records and the report command. Read it before filling evaluation.json.",
         "The local adapter evaluates the CURRENT working tree, including uncommitted and untracked non-ignored files, instead of the default branch. Its fingerprint must match when reporting.", "",
     ]
     if previous:
@@ -115,10 +115,10 @@ def assessment_prompt(repository: dict, output: Path | None, previous: dict | No
         f"{total} criterion keys, only the IDs above, no invented names; (3) test evidence: re-read each unit_tests_runnable command and its output; every passing application must follow that criterion's command contract and exit zero; (4) score consistency: recalculate the score from the exact report you will submit, not from an earlier manual count. If ANY check fails, STOP and revise before publishing.", "",
         "## Phase 5 - Scoring & Report Generation", "",
         "1. Score: skipped signals (null numerator) are excluded. Pass rate = the mean of numerator/denominator over non-skipped signals, so each signal weighs equally regardless of its denominator or category (A = 3/5, B = 1/1, C = 0/2 gives (0.6 + 1.0 + 0.0) / 3 = 53.3%). Level 1: 0–20%, Level 2: 20–40%, Level 3: 40–60%, Level 4: 60–80%, Level 5: 80–100%. There is no Level 6, and the signal's own level field is classification only, never a gate. The report command computes this exact signal-weighted mean; do not hand-count or pool numerators.",
-        "2. Store: run the report command from the Local adapter section. It replaces Factory's store_agent_readiness_report tool.",
+        "2. Store: run the report command from the Local adapter section. It replaces the cloud store_agent_readiness_report tool.",
         "3. Summarize after storing, with the headings # Level, # Applications, # Criteria (grouped by catalog category, each criterion as `name: X/Y - rationale`, highlighting failing rationales) and # Action Items (2–3 specific, achievable, high-impact next steps)"
         + (", plus # Changes Since Last Report (only what changed since the previous evaluation)" if previous else "")
-        + ". Link the actual local JSON/Markdown files in place of Factory's dashboard URL; report skipped/failed signals and limitations.", "",
+        + ". Link the actual local JSON/Markdown files in place of a dashboard URL; report skipped/failed signals and limitations.", "",
         "## Behavioral Guidelines", "",
         "- Be deterministic: identical repo → identical output.",
         "- Prefer existence checks over deep semantic analysis.",
@@ -126,7 +126,7 @@ def assessment_prompt(repository: dict, output: Path | None, previous: dict | No
         "- Keep notes terse, actionable and under 500 characters.",
         "- The application count from Phase 2 is fixed for the whole evaluation.",
         f"- Use ONLY the {total} defined criterion IDs.", "",
-        f"{LOCAL_ADAPTER_HEADING} (replaces Factory's storage tool)", "",
+        f"{LOCAL_ADAPTER_HEADING} (replaces cloud storage)", "",
         _LOCAL_ADAPTER_FILES, CONDITION_INSTRUCTIONS, "", _LOCAL_ADAPTER_REPORT,
     ])
     if instructions:

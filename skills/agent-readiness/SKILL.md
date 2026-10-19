@@ -5,7 +5,7 @@ description: Evaluate a Git repository against the versioned 84-criterion readin
 
 # Agent Readiness
 
-总入口。Droid 0.240.0 的原生命令是 `/readiness-report` 和 `/readiness-fix`；`/agent-readiness` 只是本项目的便携别名。
+总入口。原版 0.240.0 的原生命令是 `/readiness-report` 和 `/readiness-fix`；`/agent-readiness` 只是本项目的便携别名。
 
 ## 定位 CLI
 
@@ -21,6 +21,6 @@ description: Evaluate a Git repository against the versioned 84-criterion readin
 
 ## 忠实性
 
-- 规则、计分、命令流程固定参照 Droid 0.240.0；等级边界 20/40/60/80%，没有 Level 6。
+- 规则、计分、命令流程固定参照原版 0.240.0；等级边界 20/40/60/80%，没有 Level 6。
 - 本地实现与原版的差异（本地存储、两条规则的条件证据、unit_tests_runnable 本地检查、当前工作树、自动补分母等）列在仓库的 `docs/fidelity.md`。
-- 报告只存本地 JSON/Markdown，不上传，不伪造 Factory URL。只有实际改动、验证并重评后，才能说“已修复”。
+- 报告只存本地 JSON/Markdown，不上传，不伪造云端报告 URL。只有实际改动、验证并重评后，才能说“已修复”。

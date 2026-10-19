@@ -1,4 +1,4 @@
-"""Droid 0.240.0 scoring, including its partial-credit and empty-report behavior.
+"""Upstream 0.240.0 scoring, including its partial-credit and empty-report behavior.
 
 This module is deliberately separate from report validation. Its native scoring
 core tolerates missing criteria and nonpositive denominators, as the CLI does;

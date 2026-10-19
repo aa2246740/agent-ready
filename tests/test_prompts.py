@@ -1,4 +1,4 @@
-"""Regressions for decisions recovered from Droid 0.240.0's lN/C/oZ/y.
+"""Regressions for decisions recovered from the upstream 0.240.0 lN/C/oZ/y.
 
 Source: the original chunk at byte offset 186035557 (SHA-256
 7b46b0fc3864aa48ac66f426d5a8d90403fbd95c95b3e5f81d92fa8a295aedae).
@@ -230,7 +230,7 @@ class PromptContractTests(unittest.TestCase):
             "re-read each unit_tests_runnable command and its output",
             "STOP and revise before publishing", "exact signal-weighted mean",
             "# Level", "# Applications", "# Criteria", "# Action Items",
-            "There is no Level 6", "It replaces Factory's store_agent_readiness_report tool",
+            "There is no Level 6", "It replaces the cloud store_agent_readiness_report tool",
             "Level 1: 0–20%, Level 2: 20–40%, Level 3: 40–60%, Level 4: 60–80%, Level 5: 80–100%",
         ):
             self.assertIn(expected, prompt)

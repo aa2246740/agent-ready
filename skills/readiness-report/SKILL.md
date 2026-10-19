@@ -38,4 +38,4 @@ python3 "$READINESS_CLI" report "$READINESS_TARGET" --input "$READINESS_WORK/eva
 
 ## 与原生的差别
 
-由当前 agent 执行审计，本地 CLI 负责模板、校验、计分和存储；Factory 云报告由本地文件替代。差异清单见仓库 `docs/fidelity.md`。
+由当前 agent 执行审计，本地 CLI 负责模板、校验、计分和存储；原版的云端报告由本地文件替代。差异清单见仓库 `docs/fidelity.md`。

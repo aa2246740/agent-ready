@@ -2,7 +2,7 @@
   "releaseVersion": "0.1.0",
   "validationRound": 5,
   "baseCommit": "399dcf1",
-  "validatedAt": "2026-10-19T05:56:15.109686+00:00",
+  "validatedAt": "2026-10-19T06:20:15.192772+00:00",
   "rulesSha256": "ed71a19ab3288d32f70744c0cc965360513450da434ad56adda27d50f5628a22",
   "rulesAndScoringUnchanged": true,
   "runtimeFiles": [
@@ -23,12 +23,12 @@
     },
     {
       "path": "agent_readiness/catalog.py",
-      "sha256": "94b2119b2d9f138e4e21ee3efca57ef5eca9a3c9ba33ebcec38eb7c5a2942a84",
-      "sameAsBase399dcf1": true
+      "sha256": "dac6c4e1daeccc3d234ccb35de0368da0c68cbf33fef034e3bffa9c899045952",
+      "sameAsBase399dcf1": false
     },
     {
       "path": "agent_readiness/cli.py",
-      "sha256": "2a5b5a8675b142b88b24087b97bd2c8af98edf698ec00009f5dae7c97e66ef1e",
+      "sha256": "f296f5188b87013096a3612a2cb44b10366ae971d5ae934c7616820d79df2c16",
       "sameAsBase399dcf1": false
     },
     {
@@ -38,8 +38,8 @@
     },
     {
       "path": "agent_readiness/prompts.py",
-      "sha256": "90e1ee40a989aecd2c8f76eb7fe7dca79818c45341d01e4dbf107a16725348ef",
-      "sameAsBase399dcf1": true
+      "sha256": "61896e7bee95e9b8793bbd4b7665f0bb0b7aa2b5c362d9331e7c98c64a9e9326",
+      "sameAsBase399dcf1": false
     },
     {
       "path": "agent_readiness/report.py",
@@ -58,8 +58,8 @@
     },
     {
       "path": "agent_readiness/scoring.py",
-      "sha256": "c890370a434d29e39770a555c42a6208e72ce96f79aab5807778b9feba3d19bb",
-      "sameAsBase399dcf1": true
+      "sha256": "0404481daf48548cd441d864651b649fffb528ebd865224372558167bb641581",
+      "sameAsBase399dcf1": false
     },
     {
       "path": "agent_readiness/validation.py",
@@ -88,8 +88,8 @@
     },
     {
       "path": "skills/agent-readiness/SKILL.md",
-      "sha256": "9f076854c95899c8721f7f05028f36e00eefd10e0181b2b4cb0679551e32977b",
-      "sameAsBase399dcf1": true
+      "sha256": "39fb56126b805ad01989117bed72310284d0d75f94d216e202cdee464c8e1be3",
+      "sameAsBase399dcf1": false
     },
     {
       "path": "skills/readiness-fix/SKILL.md",
@@ -98,7 +98,7 @@
     },
     {
       "path": "skills/readiness-report/SKILL.md",
-      "sha256": "f183ec70da1024646b688fdb275a66d1c2633729399dad88a06b564e034d8b55",
+      "sha256": "037648bc7c58b9b5345435be67184c8d260563ae197adf564a823da37b19872d",
       "sameAsBase399dcf1": false
     }
   ],
@@ -108,8 +108,8 @@
     "failures": 0,
     "errors": 0,
     "skipped": 0,
-    "seconds": 181.973,
-    "logSha256": "93a9e3d5af0646751e99a046e5041abcf8ec2a6de7e209fd748ccdc1ab70da69",
+    "seconds": 190.769,
+    "logSha256": "462e689ae07ae41b31afae2de97d13dd986f5c3f4ca4b83048116e4c629ef947",
     "goRegressionTestsActuallyRun": 7
   },
   "reproduction": {
@@ -133,11 +133,11 @@
   },
   "localAdapterBytes": {
     "before": 6123,
-    "after": 6128,
+    "after": 6119,
     "target": 6144,
     "beforeWithHeading": 6139,
-    "afterWithHeading": 6144,
-    "note": "Round 5 adds the alert notifier naming hint; measured as in test_size_budgets_keep_instructions_short"
+    "afterWithHeading": 6135,
+    "note": "Round 5 adds the alert notifier naming hint and neutral upstream wording; measured as in test_size_budgets_keep_instructions_short"
   },
   "environment": {
     "python": "3.14.7",
@@ -195,7 +195,7 @@
     },
     {
       "path": "tests/test_prompts.py",
-      "sha256": "a777aef26712bd826f63088d9d3b608daadfc60b86f7582a84041cfc77c88bc3"
+      "sha256": "ab5a53891d38befe26564b3be8d07030e06f79b7db590e91c6f2a8e3a6a5bf05"
     },
     {
       "path": "tests/test_python_collection_contract.py",
@@ -207,7 +207,7 @@
     },
     {
       "path": "tests/test_runner_context.py",
-      "sha256": "af5ef64cf304d2bdc0ef05cfcac8a6250792708d36c67f3624fd333ab1f40483"
+      "sha256": "9adfb692b72619e27c78f2ca52e2b0e09577328ce0f3b2c9a65e2143c4dc1730"
     },
     {
       "path": "tests/test_runner_routing_gaps.py",
@@ -782,5 +782,6 @@
         ]
       }
     }
-  ]
+  ],
+  "scoringChange": "agent_readiness/scoring.py: module docstring wording only; the code AST after the docstring is identical to 399dcf1"
 }
