@@ -114,13 +114,15 @@ def _run_captured(command: str, cwd: Path, timeout: float) -> tuple[int, str]:
                 # The shell may already have exited while children hold stdout.
                 # Always signal the group, including TERM-resistant descendants.
                 for sig in (signal.SIGTERM, signal.SIGKILL):
+                    # Reap a dead shell first: macOS refuses killpg with EPERM when
+                    # the group holds only a zombie (a setsid child escaped it).
+                    process.poll()
                     try:
                         os.killpg(process.pid, sig)
-                    except ProcessLookupError:
+                    except (ProcessLookupError, PermissionError):
                         pass
                     if sig == signal.SIGTERM:
                         time.sleep(0.1)
-                        process.poll()  # reap a dead shell before the second group signal
                 process.wait()
                 # Keep bytes already in the pipe without waiting on a process
                 # that escaped the session. The timeout note marks truncation.

@@ -1,6 +1,16 @@
 # 验证范围
 
-Round 4 在 56958d3 基础上验证 F1–F12。规则文件、criterion ID、rubric/schema 标识和计分保持不变；未调用新模型或 Factory 云服务。以下为 2026-10-19 实跑结果，0.1.0 初次交付记录另列在后。
+Round 5 在 399dcf1 基础上修复独立复查 r4 的发现（R1–R7），规则文件、criterion ID、rubric/schema 标识和计分不变，未调用新模型。以下为 2026-10-19 实跑结果；Round 4 与 0.1.0 的记录另列在后，不计入本轮执行。
+
+- `GO_TEST_BINARY=<官方 Go 1.27.2> python3 -m unittest discover -s tests -v`：ran 388，failed 0，errors 0，skipped 0，192.676 秒，7 项真实 Go 子进程回归均执行。
+- 复查员的 8 个复现案例在本轮源码上得到预期结果：yarn/bun 的 `$` 脚本回显不再当作列出的测试；标题含 "2 passed" 的列表、`npm test -- list`、`cross-env NODE_ENV=test vitest list`、`vitest --environment node list` 接受；脱离会话的子进程超时时 capture 记 124，不再因 EPERM 退出 2；readiness-report SKILL.md 对 `--json` 回执的描述与实际一致。
+- 重放全部 33 份 `runs/*/task/evaluation.json` 真实评估（含本轮 3 份 Opus 评估）到新的临时状态目录，33/33 接受。FX 修复流程的 task-N 目录不在此脚本范围内，Round 4 已在临时副本中单独重放。
+
+当前源码哈希、计数和日志哈希见 [evidence/validation.json](../evidence/validation.json)。
+
+## Round 4 验证历史，2026-10-19
+
+Round 4 在 56958d3 基础上验证 F1–F12。规则文件、criterion ID、rubric/schema 标识和计分保持不变；未调用新模型或 Factory 云服务。以下为当时（2026-10-19）的实跑结果，未在 Round 5 重新执行。
 
 - `GO_TEST_BINARY=/Volumes/Workspace/Scratch/agent-ready-validator-hbrl7ali/go/bin/go python3 -m unittest discover -s tests -v`：ran 380，failed 0，errors 0，skipped 0，170.885 秒。Go 为 `go version go1.27.2 darwin/arm64`，7 项原有真实 Go 子进程回归均执行。
 - r3 的八个复现案例均得到预期结果：无行号 fix、环境/全局选项下的 JS list、标题含 Bun 标记的列表、Cargo package ID 通过；空列表拒绝；后台 capture 记 124；非法 cwd 在执行前报错。后者的旧脚本仍尝试对空 stdout 做 JSON 解码，因而脚本本身退出 1；应用已按预期返回 2 和 cwd 错误。
@@ -10,7 +20,7 @@ Round 4 在 56958d3 基础上验证 F1–F12。规则文件、criterion ID、rub
 
 开发中的第一轮全套测试为 380 项、1 failure、0 errors、0 skipped，183.107 秒，失败输出为 `'There is no per-application N/A' not found`。已恢复原句后运行上述最终套件。早期 capture 定向测试还发现 TERM 后未回收 shell 导致的 `PermissionError: [Errno 1] Operation not permitted`；回收 shell 后再发组信号已修复，21 项 capture 测试通过。失败日志与最终日志均保留在本轮临时目录，未将失败或跳过记为通过。
 
-当前源码哈希、精确计数、日志哈希及历史记录见 [evidence/validation.json](../evidence/validation.json)。测试使用合成输入；真实评估重放验证的是存储与证据兼容，没有重跑模型判断。公开源码不提交私有评估、目标快照或研究脚本。
+Round 4 的源码哈希、计数与日志哈希保存在 [evidence/validation.json](../evidence/validation.json) 的 history 中。测试使用合成输入；真实评估重放验证的是存储与证据兼容，没有重跑模型判断。公开源码不提交私有评估、目标快照或研究脚本。
 
 ## 0.1.0 初次交付验证历史，2026-10-17
 

@@ -93,7 +93,8 @@ def _javascript_words(words: list[str]) -> list[str]:
     """Strip literal environment prefixes shared by scripts and direct commands."""
     while words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):
         words = words[1:]
-    if words and Path(words[0]).name == "env":
+    # cross-env takes the same `NAME=value... command` form as env.
+    if words and Path(words[0]).name in {"env", "cross-env"}:
         words = words[1:]
         while words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):
             words = words[1:]
@@ -155,8 +156,10 @@ def _javascript_collection(words: list[str]) -> bool:
     if runner == "vitest":
         # Global options may precede the subcommand. Do not mistake an option's
         # value (e.g. --config list) for a subcommand.
-        options_with_values = {"--config", "-c", "--root", "-r", "--mode",
-                               "--project", "--reporter", "--pool", "--name"}
+        options_with_values = {"--config", "-c", "--root", "-r", "--dir", "--mode",
+                               "--project", "--reporter", "--pool", "--name",
+                               "--environment", "-t", "--testNamePattern", "--shard",
+                               "--outputFile", "--workspace", "--exclude"}
         args = runner_args
         while args and args[0].startswith("-") and args[0] != "--":
             key, equal, _ = args[0].partition("=")
@@ -221,13 +224,19 @@ def javascript_collection(words: list[str], root: Path | None = None,
         inner = shlex.split(body)
     except ValueError:
         return False
-    return _javascript_collection(inner)
+    # Arguments after the script name reach the script. npm consumes one
+    # leading `--`; pnpm and yarn forward it literally (`vitest -- list` runs).
+    extra = args[1:]
+    if Path(words[0]).name == 'npm' and extra[:1] == ['--']:
+        extra = extra[1:]
+    return _javascript_collection(inner + extra)
 
 
 def javascript_list_output(output: str) -> bool:
     """Require a runner's listed item, excluding package lifecycle banners."""
     clean = re.sub(r"\x1b\[[0-9;]*m", "", output)
-    lines = [line.strip() for line in clean.splitlines() if not line.lstrip().startswith(">")]
+    # npm/pnpm echo the script as `> ...`; yarn classic and bun as `$ ...`.
+    lines = [line.strip() for line in clean.splitlines() if not line.lstrip().startswith((">", "$ "))]
     for line in lines:
         # Jest paths, Vitest file > test, and Playwright file:line:column items.
         if re.search(r"\.(?:[cm]?[jt]sx?|vue|svelte)(?::\d+(?::\d+)?)?(?:\s+[>›]\s+.+)?$", line):

@@ -23,7 +23,7 @@ python3 "$READINESS_CLI" prepare "$READINESS_TARGET" --output "$READINESS_WORK" 
 python3 "$READINESS_CLI" report "$READINESS_TARGET" --input "$READINESS_WORK/evaluation.json" --state-dir "$READINESS_STATE"
 ```
 
-`report` 一次列出全部问题。逐条修正后重跑，直到存储成功；失败时不要宣称已有报告。成功时默认只打印摘要（等级、分数、通过/失败/跳过数、JSON 与 Markdown 路径），`--json` 输出完整 JSON。
+`report` 一次列出全部问题。逐条修正后重跑，直到存储成功；失败时不要宣称已有报告。成功时默认只打印摘要（等级、分数、通过/失败/跳过数、JSON 与 Markdown 路径），`--json` 输出 `{report, markdown, summary}` 回执，含证据的完整评估在 `receipt.report` 指向的文件中。
 5. 存储成功后按 `# Level`、`# Applications`、`# Criteria`、`# Action Items` 汇报（有历史报告加 `# Changes Since Last Report`），链接实际生成的 JSON/Markdown，并说明跳过项和证据局限。
 
 ## 要点
