@@ -2,9 +2,11 @@
 
 Round 5 在 399dcf1 基础上修复独立复查 r4 的发现（R1–R7），规则文件、criterion ID、rubric/schema 标识和计分不变，未调用新模型。以下为 2026-10-19 实跑结果；Round 4 与 0.1.0 的记录另列在后，不计入本轮执行。
 
-- `GO_TEST_BINARY=<官方 Go 1.27.2> python3 -m unittest discover -s tests -v`：ran 388，failed 0，errors 0，skipped 0，192.676 秒，7 项真实 Go 子进程回归均执行。
+- `GO_TEST_BINARY=<官方 Go 1.27.2> python3 -m unittest discover -s tests -v`：ran 388，failed 0，errors 0，skipped 0，181.973 秒，7 项真实 Go 子进程回归均执行。
 - 复查员的 8 个复现案例在本轮源码上得到预期结果：yarn/bun 的 `$` 脚本回显不再当作列出的测试；标题含 "2 passed" 的列表、`npm test -- list`、`cross-env NODE_ENV=test vitest list`、`vitest --environment node list` 接受；脱离会话的子进程超时时 capture 记 124，不再因 EPERM 退出 2；readiness-report SKILL.md 对 `--json` 回执的描述与实际一致。
 - 重放全部 33 份 `runs/*/task/evaluation.json` 真实评估（含本轮 3 份 Opus 评估）到新的临时状态目录，33/33 接受。FX 修复流程的 task-N 目录不在此脚本范围内，Round 4 已在临时副本中单独重放。
+
+- 按修复流程测试反馈补充两处说明：告警证据中规则与发送记录使用同一个 notifier 名称；prepare 之后目标又改动时旧任务目录作废、换新目录重新 prepare。Local adapter 含标题 6144 字节，等于上限。
 
 当前源码哈希、计数和日志哈希见 [evidence/validation.json](../evidence/validation.json)。
 

@@ -46,11 +46,11 @@ renovate.json/json5, .renovaterc). dependabot[bot]/app/dependabot and
 renovate[bot]/app/renovate identify their corresponding updater. Other facts
 must occur in the quote, except trigger kind; handler/notifier may also match
 the cited path. Alert identities normalize source extensions and ::, . and /
-separators (app.monitor == app/monitor.py). Configuration/PR updater and
-trigger/rule/notifier identities must connect. Multi-app alert support needs
+separators (app.monitor == app/monitor.py). Updater and trigger/rule/notifier
+identities must connect (rule and delivery name one notifier, e.g. its
+function). Multi-app alert support needs
 application: <exact apps key>, with a separate connected chain for each passing
-app. Single-app support may omit application. Errors identify all gaps so you
-can correct the same submission. Historical reports are not revalidated.
+app. Single-app support may omit application. Errors list all gaps at once. Historical reports are not revalidated.
 
 Never invent PRs, excerpts, enabled state or operational history. The validator
 checks captures and identities, not arbitrary code semantics or external

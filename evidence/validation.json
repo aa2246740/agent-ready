@@ -2,7 +2,7 @@
   "releaseVersion": "0.1.0",
   "validationRound": 5,
   "baseCommit": "399dcf1",
-  "validatedAt": "2026-10-19T05:45:27.057549+00:00",
+  "validatedAt": "2026-10-19T05:56:15.109686+00:00",
   "rulesSha256": "ed71a19ab3288d32f70744c0cc965360513450da434ad56adda27d50f5628a22",
   "rulesAndScoringUnchanged": true,
   "runtimeFiles": [
@@ -33,8 +33,8 @@
     },
     {
       "path": "agent_readiness/condition_evidence.py",
-      "sha256": "48c797b4e7ff660c3559a39b43e894145801b56c5b282514776514b21fce1d74",
-      "sameAsBase399dcf1": true
+      "sha256": "550e9197edf4933ec9fadf11caf96f8043813189ddd17a63575141091e418abe",
+      "sameAsBase399dcf1": false
     },
     {
       "path": "agent_readiness/prompts.py",
@@ -93,8 +93,8 @@
     },
     {
       "path": "skills/readiness-fix/SKILL.md",
-      "sha256": "df595c218346f8623f73536fec65a6996b34cb3cf27b152f0a6e14f4aad48cd7",
-      "sameAsBase399dcf1": true
+      "sha256": "daf3e60593105524ffbc6bd0465d9c3b1db9dfa5340da8d7e3e9645eee2987eb",
+      "sameAsBase399dcf1": false
     },
     {
       "path": "skills/readiness-report/SKILL.md",
@@ -108,8 +108,8 @@
     "failures": 0,
     "errors": 0,
     "skipped": 0,
-    "seconds": 192.676,
-    "logSha256": "6b99d0f963e8692f4d2fd5e9be6e2d747ab4bfb85a5f91437874b3c1c4f3354b",
+    "seconds": 181.973,
+    "logSha256": "93a9e3d5af0646751e99a046e5041abcf8ec2a6de7e209fd748ccdc1ab70da69",
     "goRegressionTestsActuallyRun": 7
   },
   "reproduction": {
@@ -132,11 +132,12 @@
     "excluded": "FX fix-loop task-N directories (replayed in round 4 via temporary clones)"
   },
   "localAdapterBytes": {
-    "before": 6233,
-    "after": 6123,
+    "before": 6123,
+    "after": 6128,
     "target": 6144,
-    "beforeWithHeading": 6249,
-    "afterWithHeading": 6139
+    "beforeWithHeading": 6139,
+    "afterWithHeading": 6144,
+    "note": "Round 5 adds the alert notifier naming hint; measured as in test_size_budgets_keep_instructions_short"
   },
   "environment": {
     "python": "3.14.7",
