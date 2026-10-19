@@ -111,7 +111,7 @@ def _command_position_is_forbidden(words: list[str]) -> bool:
     segments.append(current)
     for segment in segments:
         index = 0
-        if segment and Path(segment[0]).name == "env":
+        if segment and Path(segment[0]).name in {"env", "cross-env"}:
             index = 1
             while index < len(segment) and segment[index].startswith("-"):
                 index += 1
@@ -656,10 +656,10 @@ def _test_record(item: dict, apps: dict, root: Path | None, *, check_paths: bool
     # A shell starting outside and cd-ing to the root has the same selectors
     # as a direct root invocation. The initial host directory is not app scope.
     changed_directory = runner_cwd != Path(".") and runner_cwd != Path(initial_cwd)
-    if Path(words[0]).name == "env":
+    if Path(words[0]).name in {"env", "cross-env"}:
         words = words[1:]
         if words and words[0].startswith("-"):
-            raise ReportError("env accepts assignments only; remove env options that change dispatch or cwd")
+            raise ReportError("env/cross-env accept assignments only; remove options that change dispatch or cwd")
     assignments = {}
     while words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):
         name, value = words.pop(0).split("=", 1)
@@ -727,7 +727,9 @@ def _test_record(item: dict, apps: dict, root: Path | None, *, check_paths: bool
         kind, selected = javascript_selection(words, runner_cwd, apps, root, check_paths=check_paths)
         if kind and selected == set():
             raise ReportError("TS/JS workspace/directory selector is ambiguous, a glob, unknown or outside the target; name exactly one apps directory or package.json name")
-        if re.search(r"(?m)^\s*(?:PASS|FAIL)(?:\s|$)|\b\d+\s+(?:tests?\s+)?(?:passed|failed)\b|^\s*\((?:pass|fail)\)(?:\s|$)|^\s*\d+\s+(?:pass|fail)\s*$|^\s*Ran\s+\d+\s+tests?\b", output):
+        # Result counts are judged at line start (optionally after a Jest/Vitest
+        # summary label), so listed titles such as "sums 2 passed checks" stay list items.
+        if re.search(r"(?m)^\s*(?:PASS|FAIL)(?:\s|$)|^\s*(?:(?:Test Files|Test Suites|Tests)\s*:?\s+)?\d+\s+(?:tests?\s+)?(?:passed|failed)\b|^\s*\((?:pass|fail)\)(?:\s|$)|^\s*\d+\s+(?:pass|fail)\s*$|^\s*Ran\s+\d+\s+tests?\b", output):
             raise ReportError("TS/JS output reports executed tests; capture runner list/collection output only")
         if not javascript_collection(words, root, runner_cwd, apps, check_paths=check_paths):
             raise ReportError("TS/JS requires runner-native collection/list mode; use jest --listTests or vitest list, including in the selected package script")

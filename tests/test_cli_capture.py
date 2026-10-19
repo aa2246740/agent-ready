@@ -96,6 +96,21 @@ class CaptureTests(unittest.TestCase):
         time.sleep(1)
         self.assertFalse(self.marker.exists())
 
+    def test_escaped_session_child_holding_output_is_a_timeout_record(self):
+        import shlex
+        # setsid leaves only the zombie shell in the group; macOS killpg then
+        # fails with EPERM, which must not abort the capture.
+        program = ("import os,sys,time\n"
+                   "if os.fork()==0:\n"
+                   " os.setsid(); time.sleep(1.5); sys.exit()\n"
+                   "print('parent done', flush=True)")
+        started = time.monotonic()
+        record = self.capture([shlex.join([sys.executable, '-c', program])], timeout=0.5)
+        self.assertLess(time.monotonic() - started, 1.4)
+        self.assertEqual(record['exitCode'], 124)
+        self.assertIn('parent done', record['output'])
+        self.assertIn('timed out after 0.5s', record['output'])
+
     def test_background_output_before_deadline_is_complete(self):
         import shlex
         program = "import time; time.sleep(.2); print('late output')"
