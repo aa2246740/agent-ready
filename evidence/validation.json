@@ -362,7 +362,7 @@
           }
         ],
         "tests": {
-          "command": "GO_TEST_BINARY=/Volumes/Workspace/Scratch/agent-ready-validator-hbrl7ali/go/bin/go python3 -m unittest discover -s tests -v",
+          "command": "GO_TEST_BINARY=<official Go 1.27.2> python3 -m unittest discover -s tests -v",
           "ran": 380,
           "executed": 380,
           "failures": 0,

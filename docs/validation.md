@@ -14,7 +14,7 @@ Round 5 在 399dcf1 基础上修复独立复查 r4 的发现（R1–R7），规�
 
 Round 4 在 56958d3 基础上验证 F1–F12。规则文件、criterion ID、rubric/schema 标识和计分保持不变；未调用新模型或 Factory 云服务。以下为当时（2026-10-19）的实跑结果，未在 Round 5 重新执行。
 
-- `GO_TEST_BINARY=/Volumes/Workspace/Scratch/agent-ready-validator-hbrl7ali/go/bin/go python3 -m unittest discover -s tests -v`：ran 380，failed 0，errors 0，skipped 0，170.885 秒。Go 为 `go version go1.27.2 darwin/arm64`，7 项原有真实 Go 子进程回归均执行。
+- `GO_TEST_BINARY=<官方 Go 1.27.2> python3 -m unittest discover -s tests -v`：ran 380，failed 0，errors 0，skipped 0，170.885 秒。Go 为 `go version go1.27.2 darwin/arm64`，7 项原有真实 Go 子进程回归均执行。
 - r3 的八个复现案例均得到预期结果：无行号 fix、环境/全局选项下的 JS list、标题含 Bun 标记的列表、Cargo package ID 通过；空列表拒绝；后台 capture 记 124；非法 cwd 在执行前报错。后者的旧脚本仍尝试对空 stdout 做 JSON 解码，因而脚本本身退出 1；应用已按预期返回 2 和 cwd 错误。
 - 另以真实 Vitest 跑了 `--json`、`--filesOnly`、`--filesOnly --json` 三种列表，均退出 0 并接受。r2 的已捕获真实 Bun 执行证据仍被拒绝。capture 的真实子进程回归覆盖后台 EOF、TERM 忽略、超时清理及限时内完整输出。
 - 重放 33 份已完成真实评估，最终 33/33 接受。原样在当前目标重放为 31/33；FX task-1、task-2 是旧提交，按当前目标提交时正确拒绝。随后在新的临时副本检出各自原提交，核对 head/fingerprint 与原记录相同，重绑副本元数据，并在新 cwd 重新采集唯一的 `unit_tests_runnable` pytest 收集证据，两份均接受。其他判断和证据未改；原输入、目标和 runs/*/state 均未写入。AS3 两个目录没有已完成的 evaluation，不计入分母。
