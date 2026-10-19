@@ -1,225 +1,248 @@
 {
   "releaseVersion": "0.1.0",
-  "targetRepository": "aa2246740/agent-ready",
+  "validationRound": 4,
+  "baseCommit": "56958d3a841bcf2335f1a75958135dd589a167ff",
+  "validatedAt": "2026-10-19T03:33:06.667988+00:00",
   "rulesSha256": "ed71a19ab3288d32f70744c0cc965360513450da434ad56adda27d50f5628a22",
   "rulesAndScoringUnchanged": true,
-  "onlyRuntimeChange": "Validation, repository identity, report storage, CLI and bundled tools changed after the 0.1.0 snapshot; rules.json and scoring.py hashes are unchanged",
   "runtimeFiles": [
     {
       "path": "agent_readiness/__init__.py",
       "sha256": "01a520d7eeebcc149031da233dbc6a37170e3229eef8aa2c0399cd7ae934d7e4",
-      "sameAsMaintainedVersion": false
+      "sameAsBase56958d3": true
     },
     {
       "path": "agent_readiness/__main__.py",
       "sha256": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d",
-      "sameAsMaintainedVersion": true
+      "sameAsBase56958d3": true
     },
     {
       "path": "agent_readiness/application_scope.py",
-      "sha256": "de6baac6792abb70b440a88b7342b8ae900ef0c43f7aa5a3ceb6546e894e9d2e",
-      "sameAsMaintainedVersion": false
+      "sha256": "8bc967067490932fd5b740a1679bf06a36a39471c2b974d7d65b9737b014599e",
+      "sameAsBase56958d3": true
     },
     {
       "path": "agent_readiness/catalog.py",
       "sha256": "94b2119b2d9f138e4e21ee3efca57ef5eca9a3c9ba33ebcec38eb7c5a2942a84",
-      "sameAsMaintainedVersion": true
+      "sameAsBase56958d3": true
     },
     {
       "path": "agent_readiness/cli.py",
-      "sha256": "b893ac77112fd3613112f26abd41d1dfb0f3d2784ce411c409d7cbf68a621c3e",
-      "sameAsMaintainedVersion": false
+      "sha256": "dfea0e899fd6df1057a86e211b5038da1dcecf9547a5edf666ca2af89228864d",
+      "sameAsBase56958d3": false
     },
     {
       "path": "agent_readiness/condition_evidence.py",
-      "sha256": "1e3c8845606b6420a01a061ef5526e5e1ba7e0746a9eab279f1ac14581987ccf",
-      "sameAsMaintainedVersion": false
-    },
-    {
-      "path": "agent_readiness/data/rules.json",
-      "sha256": "ed71a19ab3288d32f70744c0cc965360513450da434ad56adda27d50f5628a22",
-      "sameAsMaintainedVersion": true
+      "sha256": "48c797b4e7ff660c3559a39b43e894145801b56c5b282514776514b21fce1d74",
+      "sameAsBase56958d3": true
     },
     {
       "path": "agent_readiness/prompts.py",
-      "sha256": "2e9f9737e2a9f3d739e54686123cfe950f4f3a0352eeafa880be038723738f6a",
-      "sameAsMaintainedVersion": true
+      "sha256": "90e1ee40a989aecd2c8f76eb7fe7dca79818c45341d01e4dbf107a16725348ef",
+      "sameAsBase56958d3": false
     },
     {
       "path": "agent_readiness/report.py",
-      "sha256": "b5a3527f5e4a026fe13824880c62c8a719eca40fa32af1ad8c8ca50645917850",
-      "sameAsMaintainedVersion": false
+      "sha256": "bab170b17143665fe61dac709a18b44bdba05327fd0cd9708d60e6af4694b8a4",
+      "sameAsBase56958d3": false
     },
     {
       "path": "agent_readiness/repository.py",
-      "sha256": "ad1246b6bb90c3b119ba1bbbe62376c66c28b086a45d696f63f60deab8198278",
-      "sameAsMaintainedVersion": false
+      "sha256": "3a705539b7debb8e2ea57fcaa98b2b1972c55655f8405e61018ef2f248e1e9e5",
+      "sameAsBase56958d3": true
     },
     {
       "path": "agent_readiness/runner_contract.py",
-      "sha256": "fcd4171d99f680bba5b3f63993780d9a8a4f19f73ca7d6e66a3b2f28d0001489",
-      "sameAsMaintainedVersion": false
+      "sha256": "b4657653a72093289472d4704be415b8dc1cc179a69bb74704b4526053369c95",
+      "sameAsBase56958d3": false
     },
     {
       "path": "agent_readiness/scoring.py",
       "sha256": "c890370a434d29e39770a555c42a6208e72ce96f79aab5807778b9feba3d19bb",
-      "sameAsMaintainedVersion": true
+      "sameAsBase56958d3": true
+    },
+    {
+      "path": "agent_readiness/validation.py",
+      "sha256": "00f16aa25e4595ce47551580ade6594bf7dcb35a105ae723fc49ec41373e3ad7",
+      "sameAsBase56958d3": true
+    },
+    {
+      "path": "agent_readiness/data/rules.json",
+      "sha256": "ed71a19ab3288d32f70744c0cc965360513450da434ad56adda27d50f5628a22",
+      "sameAsBase56958d3": true
     },
     {
       "path": "scripts/readiness.py",
-      "sha256": "c295cead335d6b0683a75a956ed32eb35271f6df27ef3d361bb69a8ebca12ed9",
-      "sameAsMaintainedVersion": true
+      "sha256": "648522b70d671da8dd8b4e168be2b1af34242581565f674f9c15952070049382",
+      "sameAsBase56958d3": true
     },
     {
       "path": "tools/blind_submit_mcp.py",
-      "sha256": "dd58c7850b24d55359c39cdb58355d40e8fa5449e98a777c6539e5391bfc5c4a",
-      "sameAsMaintainedVersion": false
+      "sha256": "5d092646fab8b43f3975cd9da905b2bc2a2e74fa44c7469ebf730921a056e67a",
+      "sameAsBase56958d3": true
     },
     {
       "path": "tools/install_skills.py",
-      "sha256": "426d64b6de74c305612dc29414e38396f7bd357465b4e41dcd48e954a8850f05",
-      "sameAsMaintainedVersion": false
+      "sha256": "97209cb4b6fe4b7b9a763fdb64dc757964e43d002ad60e2b93ebfce62ebf4978",
+      "sameAsBase56958d3": true
     },
     {
       "path": "skills/agent-readiness/SKILL.md",
-      "sha256": "396eb79eb9519eb39bfc98ef97376c9ac8ac711d06e4d63e61eee109851811d7",
-      "sameAsMaintainedVersion": true
+      "sha256": "9f076854c95899c8721f7f05028f36e00eefd10e0181b2b4cb0679551e32977b",
+      "sameAsBase56958d3": true
     },
     {
       "path": "skills/readiness-fix/SKILL.md",
-      "sha256": "8b24152edad3cdfcf0e6ad6188487e9d40430eebbfd4326c225e75f2373a7162",
-      "sameAsMaintainedVersion": true
+      "sha256": "df595c218346f8623f73536fec65a6996b34cb3cf27b152f0a6e14f4aad48cd7",
+      "sameAsBase56958d3": false
     },
     {
       "path": "skills/readiness-report/SKILL.md",
-      "sha256": "f2ffeeb109ebd6f85d148a874d13f11a28921cd7163c84ed7c97b0861036e640",
-      "sameAsMaintainedVersion": true
+      "sha256": "373e726a1033d47bf487b8289cb417e62baf34299129c442b63efd5df075692a",
+      "sameAsBase56958d3": true
     }
   ],
   "tests": {
-    "executed": 251,
+    "command": "GO_TEST_BINARY=/Volumes/Workspace/Scratch/agent-ready-validator-hbrl7ali/go/bin/go python3 -m unittest discover -s tests -v",
+    "ran": 380,
+    "executed": 380,
     "failures": 0,
     "errors": 0,
     "skipped": 0,
-    "seconds": 107.397,
-    "logSha256": "c9d73368bda75dd9a5e2d63f3bbbee83ef3c1ed19d3895b7791405cc8c753150",
-    "includedModules": 16,
-    "excludedMaintenanceTests": 174,
-    "excludedTestsCountedAsPassing": false,
-    "suites": [
-      {
-        "command": "python3 -m unittest discover -s tests -v",
-        "environment": {
-          "GO_TEST_BINARY": "official Go 1.27.2 darwin/arm64"
-        },
-        "tests": 251,
-        "failures": 0,
-        "errors": 0,
-        "skipped": 0,
-        "seconds": 107.545,
-        "logSha256": "c9d73368bda75dd9a5e2d63f3bbbee83ef3c1ed19d3895b7791405cc8c753150"
-      },
-      {
-        "command": "python3 -m unittest discover -s tests -v",
-        "environment": {
-          "GO_TEST_BINARY": "official Go 1.27.2 darwin/arm64",
-          "TMPDIR": "/tmp"
-        },
-        "tests": 251,
-        "failures": 0,
-        "errors": 0,
-        "skipped": 0,
-        "seconds": 102.966,
-        "logSha256": "dca48d91c775c8b2fbc6731fe87bd4f8215728971a88d45ee36d855b6c142d6c"
-      },
-      {
-        "command": "python3 -m unittest tests/test_subdirectory_cd.py",
-        "environment": {
-          "GO_TEST_BINARY": "official Go 1.27.2 darwin/arm64"
-        },
-        "tests": 10,
-        "failures": 0,
-        "errors": 0,
-        "skipped": 0,
-        "seconds": 1.895,
-        "logSha256": "c407a9e8818d350b589f8f129458265b6a31f1870315b9a0dabd8449649ea229"
-      },
-      {
-        "command": "pytest --import-mode=importlib",
-        "environment": {
-          "GO_TEST_BINARY": "official Go 1.27.2 darwin/arm64"
-        },
-        "tests": 251,
-        "failures": 0,
-        "errors": 0,
-        "skipped": 0,
-        "seconds": 107.342,
-        "logSha256": "d65672e543ea039d36a94a31e6a7e2a4a9663125583b9741967785e5a118719f"
-      }
-    ],
-    "sourceStableDuringSuites": true,
-    "adversarialProbes": {
-      "total": 88,
-      "passed": 88,
-      "snapshotMembershipGitSubprocesses": 2,
-      "resultsSha256": "7818be20b82d34aeda900ecfa46b4846aaff6f03449330178dd589583fda85ac",
-      "scriptSha256": "aae9b348a0e86db75cd9d82359591306e9954a43d95f04dc2d6b657248480c5b"
-    },
-    "goRegressionTestsActuallyRun": 7
+    "seconds": 170.885,
+    "goRegressionTestsActuallyRun": 7,
+    "logSha256": "b20b75ef1a33da2c1f427ae7e8befa9a27a6fc1a45c38ce42c73c61fe405717f",
+    "includedModules": 24,
+    "sourceStableDuringSuite": true
   },
-  "scope": "Local synthetic regression, real child-command evidence, report history, restricted submission, and isolated skill installation; not a new real-model assessment",
-  "newRealModelCalls": 0,
-  "distributionExcludes": [
-    "native JavaScript oracle functions",
-    "third-party CLI binaries",
-    "research tools and fixtures",
-    "original private reports, logs, target snapshots and credentials",
-    "old Git objects, branches and tags"
+  "reproduction": {
+    "cases": 8,
+    "expectedOutcomes": 8,
+    "realVitestAdditionalFormats": 3,
+    "round2RealBunExecutionRejected": true,
+    "captureCwdHarnessExit": 1,
+    "captureCwdCliExit": 2,
+    "captureCwdExplanation": "Expected early rejection leaves stdout empty; the unchanged old harness then fails json.loads."
+  },
+  "replays": {
+    "accepted": 33,
+    "total": 33,
+    "unchangedInputAccepted": 31,
+    "unchangedInputTotal": 33,
+    "currentTargetRejections": [
+      "FX-alert-fixture/task-1",
+      "FX-alert-fixture/task-2"
+    ],
+    "historicalRecaptures": 2,
+    "changes": "FX task-1/task-2 replayed at their recorded commits in fresh temporary clones; head/fingerprint match; only repository metadata and freshly recaptured unit_tests_runnable command records differ from originals.",
+    "originalInputsTargetsAndStateUnchanged": true,
+    "resultsSha256": "6f884b6aa27d6fbec29bdc8618fc228eca3bd5a0cfa349891572937ccf07633d",
+    "historicalRecaptureResultsSha256": "421f455e07971997c1908b6ebce51d670b625915699512a4eb49da2c07daf7be"
+  },
+  "localAdapterBytes": {
+    "before": 6233,
+    "after": 6123,
+    "target": 6144,
+    "beforeWithHeading": 6249,
+    "afterWithHeading": 6139
+  },
+  "priorAttempts": [
+    {
+      "ran": 380,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 183.107,
+      "logSha256": "be566d0616cff11f34a990d592a458d962e9ba33954cde30684075fc98d08cdc",
+      "cause": "F12 wording changed an existing prompt contract; original sentence restored."
+    },
+    {
+      "scope": "capture targeted",
+      "ran": 21,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0,
+      "logSha256": "2e6c38d235c737018f3abf55590b3b36e9f881c67b74346872464e71c4ba6451",
+      "cause": "TERM left shell unreaped before KILL; macOS returned EPERM. Reap before second group signal."
+    }
   ],
-  "licenseReview": "Upstream rule text and adapted prompts remain. A new repository and version do not establish redistribution authorization. See NOTICE.md.",
-  "ciConfigured": false,
   "environment": {
     "python": "3.14.7",
-    "pytest": "pytest 9.1.1",
-    "git": "git version 2.54.0 (Apple Git-157)",
     "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
     "go": "go version go1.27.2 darwin/arm64",
-    "goArchiveSha256": "76812b213b1b2302c978d28fa52fa92d541704b9e7d9d5db8002c50e4018c4c5",
-    "goSource": "https://go.dev/dl/go1.27.2.darwin-arm64.tar.gz"
+    "git": "git version 2.54.0 (Apple Git-157)"
   },
-  "validatedAt": "2026-10-17T03:44:09.665458+00:00",
+  "scope": "Local regression and frozen evaluation replay; historical FX collection recaptured in temporary clones; no new model calls.",
+  "newRealModelCalls": 0,
+  "ciConfigured": false,
   "validationFiles": [
-    {
-      "path": "docs/validation.md",
-      "sha256": "48a4f4137259d068067b33eeb9e42d1d8e9d4533c091a9deef918e6b6b4a8924"
-    },
-    {
-      "path": "pyproject.toml",
-      "sha256": "ef427def990197d4d33769361e402316bcd6d2f9153b4abf95d157f79adcc0e7"
-    },
     {
       "path": "tests/test_application_scope.py",
       "sha256": "81eb274bab2f0d7a404c907d4342b38ebadec63955f4e4a4c50649f6658e75eb"
     },
     {
       "path": "tests/test_blind_submit_mcp.py",
-      "sha256": "91030b45608af5721f7d139176e0840f1ad859fbe2b7e3e7f379d9e3e7df1756"
+      "sha256": "78f5a0fc3191a892a0f28eddadbfb364eef96571cef2cc208a0a86f4937f0125"
+    },
+    {
+      "path": "tests/test_cli_capture.py",
+      "sha256": "dfd888b77d454d0614f00f4d8d67c37f661002609a2ec6ae9a902f487d520336"
+    },
+    {
+      "path": "tests/test_cli_report_summary.py",
+      "sha256": "952de54afe9126fdd78ee1858cce993707836b8904f8f4ddcfc2be5046cc6d64"
+    },
+    {
+      "path": "tests/test_command_evidence.py",
+      "sha256": "3c0be5b3f9c9a5331874a983f9d9b6a6b48de7e9376084762e8828dcbc3b6bf0"
     },
     {
       "path": "tests/test_condition_evidence.py",
-      "sha256": "c618c1ca23dda54efbb3630e7f16c20144546df8dad6532dfebb2c35d038f3c0"
+      "sha256": "f8e988d92320f2ce48ef3e7692558cdc4a85a3b9ac80825532dbf28e34b1cc7f"
     },
     {
       "path": "tests/test_dependency_listing_contract.py",
       "sha256": "ee3d6ed085aa169b42f46fe14b3135707cb0d8e1d478850ec441fcbce11b5242"
     },
     {
+      "path": "tests/test_empty_command_output.py",
+      "sha256": "cbcb9e636981ffa0637b8b9e0f9aae0114e9443bf484f1c3cb8092129048b215"
+    },
+    {
+      "path": "tests/test_evidence_v2.py",
+      "sha256": "105630c591e238fed3bafad46ddf066ecaf8b4d7a15121c61a2188173f156d10"
+    },
+    {
+      "path": "tests/test_java_command_evidence_gaps.py",
+      "sha256": "6b9004b4b91829bc8bfaa271af2b79848bb38509a58648525765668bbbeaf480"
+    },
+    {
+      "path": "tests/test_prompts.py",
+      "sha256": "a777aef26712bd826f63088d9d3b608daadfc60b86f7582a84041cfc77c88bc3"
+    },
+    {
+      "path": "tests/test_python_collection_contract.py",
+      "sha256": "f4790db20c83bd189a7078254ea5c7533d5188892c7bc9d653b21d864f5f3a4b"
+    },
+    {
       "path": "tests/test_repository.py",
-      "sha256": "2983752ec5529b751c8c4246e824138e8b2d0c6d6d588d33cd034a53528712a1"
+      "sha256": "99e4dabca4f6883b241415a9ea185f26d9b7879cd1e68bc5630695ab001f8fcb"
     },
     {
       "path": "tests/test_runner_context.py",
-      "sha256": "13cd366c33f8a36ecd35da9886ef5bd2678e9e9ab515650ca15b59ea7fb9c3c0"
+      "sha256": "af5ef64cf304d2bdc0ef05cfcac8a6250792708d36c67f3624fd333ab1f40483"
+    },
+    {
+      "path": "tests/test_runner_routing_gaps.py",
+      "sha256": "e104c3a64fb60c6fa75f45c6bdaa725d013b18764026ae8429d72389262f7bc1"
+    },
+    {
+      "path": "tests/test_runner_symlink_alias.py",
+      "sha256": "60cc39e64db98543b2086ccabb3ebd3cc1ec42fce9997600990972fd8685576b"
+    },
+    {
+      "path": "tests/test_scoring.py",
+      "sha256": "ee49bd68af91044f64e9f28680876742341fc47a22042596ec979784d821317b"
     },
     {
       "path": "tests/test_skill_install.py",
@@ -227,11 +250,277 @@
     },
     {
       "path": "tests/test_subdirectory_cd.py",
-      "sha256": "64d88eb4fcde872ece1fdabd0d63fc4777948ee5f3e53bbb917860aa93f393ee"
+      "sha256": "8e74a76566239ffc5dcf4e5f5ee5e67012862a32ae1ea3dfa96c17260fabbc8f"
+    },
+    {
+      "path": "tests/test_trigger_structure.py",
+      "sha256": "2790e4a07bbf66a395a64f7a15a6726078a425f9307dd0d39b5bfcf2d0e20234"
+    },
+    {
+      "path": "tests/test_validator_round3.py",
+      "sha256": "43538c6aaa44ca456b70d06965f9139b909f6bd645b19f305ac28b0c5fed40d2"
+    },
+    {
+      "path": "tests/test_validator_round4.py",
+      "sha256": "a8734da3b22ad65bc4371270401052b2d7c3f85411b290d91196555ccc533b1e"
     },
     {
       "path": "tests/test_workflow.py",
-      "sha256": "0bb07ad128b47328b585ef1358f8208c03ef876c4ce095bf366df04381be52e0"
+      "sha256": "de190de21ba27192421b1214a00a98270fd4d3578efbe44b9380e05b053285b2"
+    },
+    {
+      "path": "tests/test_wrapper_and_go_flags.py",
+      "sha256": "546ef6fad8378a0d5997c5084c54817abfa97dc79bfefe49a78dbebccee11349"
+    },
+    {
+      "path": "docs/validation.md",
+      "sha256": "f2905a8ae92234c4b4c16c834da1524778d2d14d7a5e8bfddc9550ac7b721ffe"
+    },
+    {
+      "path": "pyproject.toml",
+      "sha256": "90b5d49447bb1d8e845b45d89570ed25a80fbf041eea5910e797bc2c1fd3fce0"
+    }
+  ],
+  "history": [
+    {
+      "label": "0.1.0 initial delivery validation history; not executed again in Round 4",
+      "record": {
+        "releaseVersion": "0.1.0",
+        "targetRepository": "aa2246740/agent-ready",
+        "rulesSha256": "ed71a19ab3288d32f70744c0cc965360513450da434ad56adda27d50f5628a22",
+        "rulesAndScoringUnchanged": true,
+        "onlyRuntimeChange": "Validation, repository identity, report storage, CLI and bundled tools changed after the 0.1.0 snapshot; rules.json and scoring.py hashes are unchanged",
+        "runtimeFiles": [
+          {
+            "path": "agent_readiness/__init__.py",
+            "sha256": "01a520d7eeebcc149031da233dbc6a37170e3229eef8aa2c0399cd7ae934d7e4",
+            "sameAsMaintainedVersion": false
+          },
+          {
+            "path": "agent_readiness/__main__.py",
+            "sha256": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d",
+            "sameAsMaintainedVersion": true
+          },
+          {
+            "path": "agent_readiness/application_scope.py",
+            "sha256": "de6baac6792abb70b440a88b7342b8ae900ef0c43f7aa5a3ceb6546e894e9d2e",
+            "sameAsMaintainedVersion": false
+          },
+          {
+            "path": "agent_readiness/catalog.py",
+            "sha256": "94b2119b2d9f138e4e21ee3efca57ef5eca9a3c9ba33ebcec38eb7c5a2942a84",
+            "sameAsMaintainedVersion": true
+          },
+          {
+            "path": "agent_readiness/cli.py",
+            "sha256": "b893ac77112fd3613112f26abd41d1dfb0f3d2784ce411c409d7cbf68a621c3e",
+            "sameAsMaintainedVersion": false
+          },
+          {
+            "path": "agent_readiness/condition_evidence.py",
+            "sha256": "1e3c8845606b6420a01a061ef5526e5e1ba7e0746a9eab279f1ac14581987ccf",
+            "sameAsMaintainedVersion": false
+          },
+          {
+            "path": "agent_readiness/data/rules.json",
+            "sha256": "ed71a19ab3288d32f70744c0cc965360513450da434ad56adda27d50f5628a22",
+            "sameAsMaintainedVersion": true
+          },
+          {
+            "path": "agent_readiness/prompts.py",
+            "sha256": "2e9f9737e2a9f3d739e54686123cfe950f4f3a0352eeafa880be038723738f6a",
+            "sameAsMaintainedVersion": true
+          },
+          {
+            "path": "agent_readiness/report.py",
+            "sha256": "b5a3527f5e4a026fe13824880c62c8a719eca40fa32af1ad8c8ca50645917850",
+            "sameAsMaintainedVersion": false
+          },
+          {
+            "path": "agent_readiness/repository.py",
+            "sha256": "ad1246b6bb90c3b119ba1bbbe62376c66c28b086a45d696f63f60deab8198278",
+            "sameAsMaintainedVersion": false
+          },
+          {
+            "path": "agent_readiness/runner_contract.py",
+            "sha256": "fcd4171d99f680bba5b3f63993780d9a8a4f19f73ca7d6e66a3b2f28d0001489",
+            "sameAsMaintainedVersion": false
+          },
+          {
+            "path": "agent_readiness/scoring.py",
+            "sha256": "c890370a434d29e39770a555c42a6208e72ce96f79aab5807778b9feba3d19bb",
+            "sameAsMaintainedVersion": true
+          },
+          {
+            "path": "scripts/readiness.py",
+            "sha256": "c295cead335d6b0683a75a956ed32eb35271f6df27ef3d361bb69a8ebca12ed9",
+            "sameAsMaintainedVersion": true
+          },
+          {
+            "path": "tools/blind_submit_mcp.py",
+            "sha256": "dd58c7850b24d55359c39cdb58355d40e8fa5449e98a777c6539e5391bfc5c4a",
+            "sameAsMaintainedVersion": false
+          },
+          {
+            "path": "tools/install_skills.py",
+            "sha256": "426d64b6de74c305612dc29414e38396f7bd357465b4e41dcd48e954a8850f05",
+            "sameAsMaintainedVersion": false
+          },
+          {
+            "path": "skills/agent-readiness/SKILL.md",
+            "sha256": "396eb79eb9519eb39bfc98ef97376c9ac8ac711d06e4d63e61eee109851811d7",
+            "sameAsMaintainedVersion": true
+          },
+          {
+            "path": "skills/readiness-fix/SKILL.md",
+            "sha256": "8b24152edad3cdfcf0e6ad6188487e9d40430eebbfd4326c225e75f2373a7162",
+            "sameAsMaintainedVersion": true
+          },
+          {
+            "path": "skills/readiness-report/SKILL.md",
+            "sha256": "f2ffeeb109ebd6f85d148a874d13f11a28921cd7163c84ed7c97b0861036e640",
+            "sameAsMaintainedVersion": true
+          }
+        ],
+        "tests": {
+          "executed": 251,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "seconds": 107.397,
+          "logSha256": "c9d73368bda75dd9a5e2d63f3bbbee83ef3c1ed19d3895b7791405cc8c753150",
+          "includedModules": 16,
+          "excludedMaintenanceTests": 174,
+          "excludedTestsCountedAsPassing": false,
+          "suites": [
+            {
+              "command": "python3 -m unittest discover -s tests -v",
+              "environment": {
+                "GO_TEST_BINARY": "official Go 1.27.2 darwin/arm64"
+              },
+              "tests": 251,
+              "failures": 0,
+              "errors": 0,
+              "skipped": 0,
+              "seconds": 107.545,
+              "logSha256": "c9d73368bda75dd9a5e2d63f3bbbee83ef3c1ed19d3895b7791405cc8c753150"
+            },
+            {
+              "command": "python3 -m unittest discover -s tests -v",
+              "environment": {
+                "GO_TEST_BINARY": "official Go 1.27.2 darwin/arm64",
+                "TMPDIR": "/tmp"
+              },
+              "tests": 251,
+              "failures": 0,
+              "errors": 0,
+              "skipped": 0,
+              "seconds": 102.966,
+              "logSha256": "dca48d91c775c8b2fbc6731fe87bd4f8215728971a88d45ee36d855b6c142d6c"
+            },
+            {
+              "command": "python3 -m unittest tests/test_subdirectory_cd.py",
+              "environment": {
+                "GO_TEST_BINARY": "official Go 1.27.2 darwin/arm64"
+              },
+              "tests": 10,
+              "failures": 0,
+              "errors": 0,
+              "skipped": 0,
+              "seconds": 1.895,
+              "logSha256": "c407a9e8818d350b589f8f129458265b6a31f1870315b9a0dabd8449649ea229"
+            },
+            {
+              "command": "pytest --import-mode=importlib",
+              "environment": {
+                "GO_TEST_BINARY": "official Go 1.27.2 darwin/arm64"
+              },
+              "tests": 251,
+              "failures": 0,
+              "errors": 0,
+              "skipped": 0,
+              "seconds": 107.342,
+              "logSha256": "d65672e543ea039d36a94a31e6a7e2a4a9663125583b9741967785e5a118719f"
+            }
+          ],
+          "sourceStableDuringSuites": true,
+          "adversarialProbes": {
+            "total": 88,
+            "passed": 88,
+            "snapshotMembershipGitSubprocesses": 2,
+            "resultsSha256": "7818be20b82d34aeda900ecfa46b4846aaff6f03449330178dd589583fda85ac",
+            "scriptSha256": "aae9b348a0e86db75cd9d82359591306e9954a43d95f04dc2d6b657248480c5b"
+          },
+          "goRegressionTestsActuallyRun": 7
+        },
+        "scope": "Local synthetic regression, real child-command evidence, report history, restricted submission, and isolated skill installation; not a new real-model assessment",
+        "newRealModelCalls": 0,
+        "distributionExcludes": [
+          "native JavaScript oracle functions",
+          "third-party CLI binaries",
+          "research tools and fixtures",
+          "original private reports, logs, target snapshots and credentials",
+          "old Git objects, branches and tags"
+        ],
+        "licenseReview": "Upstream rule text and adapted prompts remain. A new repository and version do not establish redistribution authorization. See NOTICE.md.",
+        "ciConfigured": false,
+        "environment": {
+          "python": "3.14.7",
+          "pytest": "pytest 9.1.1",
+          "git": "git version 2.54.0 (Apple Git-157)",
+          "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+          "go": "go version go1.27.2 darwin/arm64",
+          "goArchiveSha256": "76812b213b1b2302c978d28fa52fa92d541704b9e7d9d5db8002c50e4018c4c5",
+          "goSource": "https://go.dev/dl/go1.27.2.darwin-arm64.tar.gz"
+        },
+        "validatedAt": "2026-10-17T03:44:09.665458+00:00",
+        "validationFiles": [
+          {
+            "path": "docs/validation.md",
+            "sha256": "48a4f4137259d068067b33eeb9e42d1d8e9d4533c091a9deef918e6b6b4a8924"
+          },
+          {
+            "path": "pyproject.toml",
+            "sha256": "ef427def990197d4d33769361e402316bcd6d2f9153b4abf95d157f79adcc0e7"
+          },
+          {
+            "path": "tests/test_application_scope.py",
+            "sha256": "81eb274bab2f0d7a404c907d4342b38ebadec63955f4e4a4c50649f6658e75eb"
+          },
+          {
+            "path": "tests/test_blind_submit_mcp.py",
+            "sha256": "91030b45608af5721f7d139176e0840f1ad859fbe2b7e3e7f379d9e3e7df1756"
+          },
+          {
+            "path": "tests/test_condition_evidence.py",
+            "sha256": "c618c1ca23dda54efbb3630e7f16c20144546df8dad6532dfebb2c35d038f3c0"
+          },
+          {
+            "path": "tests/test_dependency_listing_contract.py",
+            "sha256": "ee3d6ed085aa169b42f46fe14b3135707cb0d8e1d478850ec441fcbce11b5242"
+          },
+          {
+            "path": "tests/test_repository.py",
+            "sha256": "2983752ec5529b751c8c4246e824138e8b2d0c6d6d588d33cd034a53528712a1"
+          },
+          {
+            "path": "tests/test_runner_context.py",
+            "sha256": "13cd366c33f8a36ecd35da9886ef5bd2678e9e9ab515650ca15b59ea7fb9c3c0"
+          },
+          {
+            "path": "tests/test_skill_install.py",
+            "sha256": "766321f39e5ba0fb3ec96461f663d47d8519a62f1bec120b8dc9a4c28c8af200"
+          },
+          {
+            "path": "tests/test_subdirectory_cd.py",
+            "sha256": "64d88eb4fcde872ece1fdabd0d63fc4777948ee5f3e53bbb917860aa93f393ee"
+          },
+          {
+            "path": "tests/test_workflow.py",
+            "sha256": "0bb07ad128b47328b585ef1358f8208c03ef876c4ce095bf366df04381be52e0"
+          }
+        ]
+      }
     }
   ]
 }

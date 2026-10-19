@@ -160,8 +160,8 @@ class PromptContractTests(unittest.TestCase):
         adapter = self.adapter(prompt)
         self.assertEqual(prompt.count("Execute timeout field"), 2)  # criterion text + the one mapping sentence
         mapping = next(line for line in adapter.splitlines() if line.startswith("timeoutSeconds ="))
-        for expected in ("limit your execution tool really enforced", "default included", "Execute timeout field", "`capture --target <target>",
-                         "--append-to <task-dir>/evaluation.json --criterion <id>", "124 = timed out", "the validator never uses it"):
+        for expected in ("your execution tool's enforced limit", "including defaults", "Execute timeout field", "`capture --target <target>",
+                         "--append-to <task-dir>/evaluation.json --criterion <id>", "124 = timeout", "never used by the validator"):
             self.assertIn(expected, mapping)
         self.assertEqual(adapter.count("capture --target"), 1)
 
@@ -200,7 +200,7 @@ class PromptContractTests(unittest.TestCase):
         adapter = self.adapter(prompt)
         own_local_text = adapter.replace(CONDITION_INSTRUCTIONS, "")
         self.assertLessEqual(len(own_local_text.encode()), 3800, "local adapter prose outside the condition block")
-        self.assertLessEqual(len(adapter.encode()), 3800 + len(CONDITION_INSTRUCTIONS.encode()))
+        self.assertLessEqual(len(adapter.encode()), 6144)
         self.assertLessEqual(len(prompt.encode()), 64 * 1024)
         for name, limit in (("agent-readiness", 2560), ("readiness-report", 4096), ("readiness-fix", 4096)):
             with self.subTest(skill=name):

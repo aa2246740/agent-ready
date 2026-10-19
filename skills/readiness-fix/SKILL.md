@@ -20,7 +20,7 @@ python3 "$READINESS_CLI" fix "$READINESS_TARGET" --state-dir "$READINESS_STATE" 
 ```
 
 - 有报告：先重新核对失败项。无参数时先选**有失败项**的 category，再用一个问题单选一个 signal（选项含名称与当前分子/分母，最多 10 个）。已通过的请求要说明并跳过；跳过项不是失败，先复核其适用条件。`--signals` 只接受准确 ID，自然语言放进 `--instructions`。
-- 无报告：任务给出“先生成完整报告再修复”与“跳过报告直接修复所选信号”两条原生分支，并内嵌完整评估指令。`--all`、`--target-level` 必须先建立完整基线。
+- 无报告：任务给出“先生成完整报告再修复”与“跳过报告直接修复所选信号”两条原生分支；完整评估指令通过 `prepare` 生成的 `assessment.md` 读取。`--all`、`--target-level` 必须先建立完整基线。
 - 脚本只输出任务 Markdown，不改仓库；修改由你完成。
 
 ## 2. 实施并验证

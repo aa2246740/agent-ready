@@ -17,18 +17,19 @@
 | alerting_configured | automatic_trigger | kind、registration、handler |
 | alerting_configured | alert_delivery | notifier |
 
-`kind` 为 `schedule/event/process/service`，其余 facts 必须出现在 quote 中。文件 quote 须从实际引用行开始匹配；命令 quote 须存在于实际成功命令的记录输出。验证器不执行这些命令。
+`kind` 为 `schedule/event/process/service`，其余 facts 的匹配方式见下文。文件 quote 须从实际引用行开始匹配；命令 quote 须存在于实际成功命令的记录输出。验证器不执行这些命令。
 
 ### facts 的匹配方式
 
 - 比较不区分大小写。
 - `updater` 还可以匹配所引用文件的路径：updater 名称常常只出现在文件名里，例如 `.github/dependabot.yml`、`renovate.json`、`.github/renovate.json5`、`.renovaterc`，此时无需在配置正文里重复写出它。
 - PR 作者的常见形式 `dependabot[bot]`、`app/dependabot`、`renovate[bot]`、`app/renovate` 等同于 updater `dependabot` / `renovate`；两个 `updater` 事实仍要对应同一个工具。
-- 其余 facts（`url`、`dependency`、`handler`、`notifier`、`registration` 等）仍须出现在 quote 中。
+- `handler`、`notifier` 在 quote 中或所引用的文件路径中匹配；身份忽略大小写、去掉常见源文件扩展名，并将 `::`、`.`、`/` 视为相同分隔符，例如 `app.monitor`、`app/monitor.py`、`APP::MONITOR`。
+- 其余 facts（`url`、`dependency`、`registration` 等）仍须出现在 quote 中。
 - 触发条件的启发式按所引文件类型识别注释，只把结构性的手动触发信号视为手动触发；它们只用来发现诚实的失误，不判断工程实践好坏。
 - 错误信息会列出规则、条件、证据序号和缺失或不一致的 fact，全部问题一次返回。
 
-两个 updater 要对应；触发 handler、规则 handler、规则 notifier、通知出口 notifier 要形成连接。告警是 application scope，多应用时 support 必须包含 `application`，按每个应用分别形成链，不能把一个应用的证明算成多个通过。共用设施可以覆盖多个应用，但必须有对应接线证据。
+两个 updater 要对应；触发 handler 与规则 handler、规则 notifier 与通知出口 notifier 经上述规范化后须分别相同，形成连接。告警是 application scope，多应用时 support 必须包含 `application`，按每个应用分别形成链，不能把一个应用的证明算成多个通过。共用设施可以覆盖多个应用，但必须有对应接线证据。
 
 CLI 和 MCP 使用同一校验逻辑。MCP 还核对引用内容确实在当前会话工具读回中；读取过文件头不等于读过正文。缺项、引用错误以及全部超长/非法 rationale 会及时返回，模型在同一会话内纠正重提，不通过默认值补齐。
 

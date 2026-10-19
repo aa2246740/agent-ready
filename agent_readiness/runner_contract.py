@@ -89,8 +89,22 @@ def python_collection_matches_file(selected: str, output: str) -> bool:
     return True
 
 
+def _javascript_words(words: list[str]) -> list[str]:
+    """Strip literal environment prefixes shared by scripts and direct commands."""
+    while words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):
+        words = words[1:]
+    if words and Path(words[0]).name == "env":
+        words = words[1:]
+        while words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):
+            words = words[1:]
+    return words
+
+
 def _javascript_collection(words: list[str]) -> bool:
     """Distinguish package dependency listing from a test runner's list mode."""
+    words = _javascript_words(words)
+    if not words:
+        return False
     executable = Path(words[0]).name
     args = words[1:]
     # Package-manager routing options precede the actual command. The scope
@@ -138,8 +152,17 @@ def _javascript_collection(words: list[str]) -> bool:
             }
             if folded in non_test_scripts and not any(token in folded for token in ("test", "spec", "jest", "vitest")):
                 return False
-    if runner == "vitest" and runner_args[:1] == ["list"]:
-        return True
+    if runner == "vitest":
+        # Global options may precede the subcommand. Do not mistake an option's
+        # value (e.g. --config list) for a subcommand.
+        options_with_values = {"--config", "-c", "--root", "-r", "--mode",
+                               "--project", "--reporter", "--pool", "--name"}
+        args = runner_args
+        while args and args[0].startswith("-") and args[0] != "--":
+            key, equal, _ = args[0].partition("=")
+            args = args[2 if key in options_with_values and not equal else 1:]
+        if args[:1] == ["list"]:
+            return True
     if runner == "playwright":
         return runner_args[:1] == ["test"] and "--list" in runner_args
     # A literal `list` alone is never evidence for npm/pnpm/yarn dependency
@@ -151,6 +174,9 @@ def _javascript_collection(words: list[str]) -> bool:
 def javascript_collection(words: list[str], root: Path | None = None,
                           runner_cwd: Path = Path('.'), apps: dict | None = None,
                           *, check_paths: bool = True) -> bool:
+    words = _javascript_words(words)
+    if not words:
+        return False
     if _javascript_collection(words):
         return True
     if root is None or not check_paths or Path(words[0]).name not in {'npm', 'pnpm', 'yarn', 'bun'}:
@@ -195,16 +221,27 @@ def javascript_collection(words: list[str], root: Path | None = None,
         inner = shlex.split(body)
     except ValueError:
         return False
-    # Only literal native test-list commands qualify from script bodies.
-    if inner and Path(inner[0]).name == 'npx':
-        inner = inner[1:]
-        if inner[:1] == ['--no-install']:
-            inner = inner[1:]
-    return bool(inner) and (
-        (Path(inner[0]).name == 'vitest' and inner[1:2] == ['list'])
-        or (Path(inner[0]).name == 'jest' and '--listTests' in inner[1:])
-        or (Path(inner[0]).name == 'playwright' and inner[1:2] == ['test'] and '--list' in inner[2:])
-    )
+    return _javascript_collection(inner)
+
+
+def javascript_list_output(output: str) -> bool:
+    """Require a runner's listed item, excluding package lifecycle banners."""
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", output)
+    lines = [line.strip() for line in clean.splitlines() if not line.lstrip().startswith(">")]
+    for line in lines:
+        # Jest paths, Vitest file > test, and Playwright file:line:column items.
+        if re.search(r"\.(?:[cm]?[jt]sx?|vue|svelte)(?::\d+(?::\d+)?)?(?:\s+[>›]\s+.+)?$", line):
+            return True
+    # Jest --listTests --json uses paths; Vitest list --json uses {file, name}
+    # objects (or {file} with --filesOnly).
+    try:
+        paths = json.loads("\n".join(lines))
+    except ValueError:
+        return False
+    if not isinstance(paths, list) or not paths:
+        return False
+    files = [item.get("file") if isinstance(item, dict) else item for item in paths]
+    return all(isinstance(path, str) and re.search(r"\.[cm]?[jt]sx?$", path) for path in files)
 
 
 def java_test_execution(words: list[str], output: str) -> bool:
