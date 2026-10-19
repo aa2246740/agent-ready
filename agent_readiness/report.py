@@ -17,7 +17,7 @@ from .application_scope import javascript_application_supported, javascript_sele
 from .catalog import criteria_by_id, load_catalog
 from .condition_evidence import condition_errors
 from .repository import RepositoryError, _root_alias_relative, command_cwd, _git, canonicalize_origin, ensure_external_output, inspect_repository, validate_evidence
-from .runner_contract import java_test_execution, javascript_collection, python_collection_file, python_collection_matches_file, other_runner_error
+from .runner_contract import java_test_execution, javascript_collection, javascript_list_output, python_collection_file, python_collection_matches_file, other_runner_error
 from .scoring import score_report, status
 from .validation import Problems, ValidationError
 
@@ -613,7 +613,13 @@ def _cargo_owns(words: list[str], app: str, runner_cwd: Path, root: Path | None,
     # declared application owns a nested crate when both root and child exist.
     for values, identities in ((packages, names), (bins, binary_names)):
         for value in values:
-            name = value.split('@', 1)[0] if identities is names else value
+            if identities is names:
+                source, fragment_separator, fragment = value.rpartition('#')
+                name = (fragment if fragment_separator else value).split('@', 1)[0]
+                if fragment_separator and re.match(r"^\d", name):
+                    name = Path(source.rstrip('/')).name
+            else:
+                name = value
             owners = identities.get(name)
             if (owners is not None and owners != {app}) or (owners is None and app in known_owners):
                 return False
@@ -721,10 +727,12 @@ def _test_record(item: dict, apps: dict, root: Path | None, *, check_paths: bool
         kind, selected = javascript_selection(words, runner_cwd, apps, root, check_paths=check_paths)
         if kind and selected == set():
             raise ReportError("TS/JS workspace/directory selector is ambiguous, a glob, unknown or outside the target; name exactly one apps directory or package.json name")
-        if re.search(r"(?m)^\s*(?:PASS|FAIL)(?:\s|$)|\b\d+\s+(?:tests?\s+)?(?:passed|failed)\b|\((?:pass|fail)\)|(?m:^\s*\d+\s+(?:pass|fail)\b)|\bRan\s+\d+\s+tests?\b", output):
+        if re.search(r"(?m)^\s*(?:PASS|FAIL)(?:\s|$)|\b\d+\s+(?:tests?\s+)?(?:passed|failed)\b|^\s*\((?:pass|fail)\)(?:\s|$)|^\s*\d+\s+(?:pass|fail)\s*$|^\s*Ran\s+\d+\s+tests?\b", output):
             raise ReportError("TS/JS output reports executed tests; capture runner list/collection output only")
         if not javascript_collection(words, root, runner_cwd, apps, check_paths=check_paths):
             raise ReportError("TS/JS requires runner-native collection/list mode; use jest --listTests or vitest list, including in the selected package script")
+        if not javascript_list_output(output):
+            raise ReportError("TS/JS output must enumerate at least one runner-produced list/collection item; package-manager banners alone do not count")
     elif executable == "go":
         own_flags = words[2:words.index("-args")] if "-args" in words else words[2:]
         flags = {"-" + word.partition("=")[0].lstrip("-").removeprefix("test.") for word in own_flags if word.startswith("-")}

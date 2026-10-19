@@ -50,7 +50,7 @@ python3 scripts/readiness.py fix /path/to/project \
   --signals lint_config --state-dir /tmp/readiness-state
 ```
 
-`report` 一次列出全部问题，修正后重跑；成功时默认打印简短摘要（等级、分数、通过/失败/跳过数、报告路径），`--json` 输出完整 JSON。`capture` 只是本地便利工具（不写目标，校验不依赖它）。`fix` 生成任务，实际修改和验证由 agent 完成。重评使用新的目标外任务目录，追加历史，不覆盖旧结论。
+`report` 一次列出全部问题，修正后重跑；成功时默认打印简短摘要（等级、分数、通过/失败/跳过数、报告路径），`--json` 输出 `{report, markdown, summary}` 回执，含证据的完整评估在 `receipt.report` 指向的文件中。`capture` 只是本地便利工具（不写目标，校验不依赖它）。`fix` 生成任务，实际修改和验证由 agent 完成。重评使用新的目标外任务目录，追加历史，不覆盖旧结论。
 
 使用细节见[运行与历史](docs/usage.md)、[模型接入](docs/byok.md)、[证据要求](docs/condition-evidence.md)、[本地实现与原版的差异](docs/fidelity.md)。规则文件名为 `rules.json`；原有规则和报告版本标识保留，以兼容既有输入。
 

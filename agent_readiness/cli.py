@@ -7,19 +7,20 @@ import codecs
 import json
 import math
 import os
+import selectors
 import shlex
 import signal
 import subprocess
 import sys
 import tempfile
-import threading
+import time
 from pathlib import Path
 
 from . import __version__
 from .catalog import criteria_by_id, load_catalog
 from .prompts import assessment_prompt, fix_prompt, fix_without_report_prompt
 from .report import ReportError, json_text, latest_report, new_evaluation, read_json, render_markdown, store_report
-from .repository import _root, ensure_external_output, inspect_repository
+from .repository import RepositoryError, _root, command_cwd, ensure_external_output, inspect_repository
 from .scoring import score_report, status
 from .validation import ValidationError
 
@@ -44,7 +45,7 @@ def parser() -> argparse.ArgumentParser:
     report.add_argument("target")
     report.add_argument("--input", type=Path, required=True)
     report.add_argument("--state-dir", type=Path)
-    report.add_argument("--json", action="store_true", help="Print the full stored report JSON instead of the short summary")
+    report.add_argument("--json", action="store_true", help="Print the {report, markdown, summary} receipt; read receipt.report for the full evaluation with evidence")
     capture = commands.add_parser(
         "capture", usage="%(prog)s --target TARGET [--cwd DIR] --timeout SECONDS [--append-to EVALUATION --criterion ID [--application APP]] -- COMMAND...",
         help="Optional helper: run one command inside the target and print (or append) its command evidence record")
@@ -93,42 +94,66 @@ class _OutputWindow:
         return f"{self.head}\n[... {omitted} characters omitted by capture ...]\n{self.tail}"
 
 
-def _drain(stream, window: _OutputWindow) -> None:
-    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-    while True:
-        chunk = os.read(stream.fileno(), 65536)
-        if not chunk:
-            break
-        window.feed(decoder.decode(chunk))
-    window.feed(decoder.decode(b"", final=True))
-
-
 def _run_captured(command: str, cwd: Path, timeout: float) -> tuple[int, str]:
     """Run `/bin/sh -c command` and return its real exit code and combined output."""
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PWD=str(cwd))
+    deadline = time.monotonic() + timeout
     process = subprocess.Popen(
         ["/bin/sh", "-c", command], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
     window = _OutputWindow()
-    reader = threading.Thread(target=_drain, args=(process.stdout, window), daemon=True)
-    reader.start()
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    os.set_blocking(process.stdout.fileno(), False)
     timed_out = False
-    try:
-        process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait()
-    reader.join(timeout=5)
+    with selectors.DefaultSelector() as selector:
+        selector.register(process.stdout, selectors.EVENT_READ)
+        while selector.get_map() or process.poll() is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                # The shell may already have exited while children hold stdout.
+                # Always signal the group, including TERM-resistant descendants.
+                for sig in (signal.SIGTERM, signal.SIGKILL):
+                    try:
+                        os.killpg(process.pid, sig)
+                    except ProcessLookupError:
+                        pass
+                    if sig == signal.SIGTERM:
+                        time.sleep(0.1)
+                        process.poll()  # reap a dead shell before the second group signal
+                process.wait()
+                # Keep bytes already in the pipe without waiting on a process
+                # that escaped the session. The timeout note marks truncation.
+                drain_deadline = time.monotonic() + 0.1
+                while time.monotonic() < drain_deadline:
+                    try:
+                        chunk = os.read(process.stdout.fileno(), 65536)
+                    except BlockingIOError:
+                        break
+                    if not chunk:
+                        break
+                    window.feed(decoder.decode(chunk))
+                break
+            if not selector.get_map():
+                try:
+                    process.wait(timeout=remaining)
+                except subprocess.TimeoutExpired:
+                    pass
+                continue
+            for key, _ in selector.select(remaining):
+                chunk = os.read(key.fd, 65536)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                else:
+                    window.feed(decoder.decode(chunk))
+    process.stdout.close()
+    window.feed(decoder.decode(b"", final=True))
     output = window.text()
     code = process.returncode
     note = ""
     if timed_out:
         code = CAPTURE_TIMEOUT_EXIT
-        note = f"[capture: timed out after {timeout:g}s; the process group was killed]"
+        note = f"[capture: timed out after {timeout:g}s; output truncated by timeout; the process group was killed]"
     elif code < 0:
         note = f"[capture: terminated by signal {-code}]"
         code = 128 - code
@@ -188,11 +213,19 @@ def capture_command(args: argparse.Namespace) -> int:
         raise ReportError("--append-to and --criterion must be used together")
     root = _root(args.target)
     try:
+        command_cwd(root, args.cwd or ".")
+    except RepositoryError as error:
+        raise ReportError(f"--cwd: {error}") from error
+    try:
         cwd = (root / Path(args.cwd or ".").expanduser()).resolve(strict=True)  # an absolute --cwd replaces the root
     except (OSError, RuntimeError) as error:
         raise ReportError(f"--cwd cannot be resolved: {error}") from error
     if not cwd.is_dir() or (cwd != root and root not in cwd.parents):
         raise ReportError("--cwd must be an existing directory inside the target; capture never runs outside it")
+    try:
+        relative = command_cwd(root, cwd.relative_to(root).as_posix())
+    except RepositoryError as error:
+        raise ReportError(f"--cwd: {error}") from error
     destination = None
     if args.append_to:
         if args.criterion not in criteria_by_id():
@@ -201,7 +234,6 @@ def capture_command(args: argparse.Namespace) -> int:
         read_json(destination)  # fail before running anything long
     command = words[0] if len(words) == 1 else shlex.join(words)
     code, output = _run_captured(command, cwd, args.timeout)
-    relative = cwd.relative_to(root).as_posix()
     record: dict = {
         "kind": "command", "command": command, "cwd": relative, "exitCode": code, "output": output,
         "timeoutSeconds": int(args.timeout) if float(args.timeout).is_integer() else args.timeout,
@@ -231,7 +263,7 @@ def report_summary(receipt: dict) -> str:
     comparison = stored.get("comparison")
     if comparison:
         lines.append(f"Changed since previous report: {len(comparison['criteria'])} criteria, {len(comparison['applications'])} applications")
-    lines.extend([f"JSON: {receipt['report']}", f"Markdown: {receipt['markdown']}", "Full JSON: re-run with --json, or read the JSON file."])
+    lines.extend([f"JSON: {receipt['report']}", f"Markdown: {receipt['markdown']}", "JSON receipt: re-run with --json; full evaluation with evidence: read the JSON file."])
     return "\n".join(lines) + "\n"
 
 

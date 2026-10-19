@@ -28,7 +28,7 @@ python3 scripts/readiness.py show /path/to/project --state-dir /tmp/project-repo
 
 正式报告校验仓库身份、HEAD、工作区内容指纹、应用目录、84 个精确规则键、分母、分子、允许跳过条件及证据。`report` 一次列出全部问题（规则、证据序号、字段）和总数，全部修正后重跑即可。目标变化后须重新 prepare；不能改快照字段来掩盖变化。
 
-`report` 成功时默认只打印摘要：等级与分数、通过/失败/跳过的条目数、应用列表、与上一份报告相比变化的条目数，以及 JSON 和 Markdown 报告的路径。需要完整 JSON（含 84 项 `criterionResults`）时加 `--json`，也可直接读存储的 JSON 文件。退出码不变：成功 0，被拒绝 2 且 stdout 为空。
+`report` 成功时默认只打印摘要：等级与分数、通过/失败/跳过的条目数、应用列表、与上一份报告相比变化的条目数，以及 JSON 和 Markdown 报告的路径。`--json` 返回 `{report, markdown, summary}` 回执，`summary.criterionResults` 含 84 项结果；含全部 evidence 的完整评估在 `receipt.report` 指向的 JSON 文件中。退出码不变：成功 0，被拒绝 2 且 stdout 为空。
 
 ### 填写要点
 

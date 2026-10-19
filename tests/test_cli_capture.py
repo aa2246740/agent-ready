@@ -77,9 +77,48 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(record["exitCode"], 124)
         self.assertEqual(record["timeoutSeconds"], 1)
         self.assertTrue(record["output"].startswith("started\n"))
-        self.assertTrue(record["output"].endswith("[capture: timed out after 1s; the process group was killed]"))
+        self.assertTrue(record["output"].endswith("[capture: timed out after 1s; output truncated by timeout; the process group was killed]"))
         time.sleep(0.5)
         self.assertFalse(self.marker.exists(), "background child of the command must be killed too")
+
+    def test_background_pipe_past_deadline_is_timeout_after_shell_exits(self):
+        import shlex
+        # The child ignores TERM to exercise the group KILL even after shell exit.
+        program = ("import signal,time; from pathlib import Path; "
+                   "signal.signal(signal.SIGTERM,signal.SIG_IGN); print('child ready',flush=True); "
+                   f"time.sleep(1); Path({str(self.marker)!r}).write_text('alive')")
+        started = time.monotonic()
+        record = self.capture([shlex.join([sys.executable, '-c', program]) + ' &'], timeout=0.3)
+        self.assertLess(time.monotonic() - started, 1.2)
+        self.assertEqual(record['exitCode'], 124)
+        self.assertIn('child ready', record['output'])
+        self.assertIn('output truncated by timeout', record['output'])
+        time.sleep(1)
+        self.assertFalse(self.marker.exists())
+
+    def test_background_output_before_deadline_is_complete(self):
+        import shlex
+        program = "import time; time.sleep(.2); print('late output')"
+        record = self.capture([shlex.join([sys.executable, '-c', program]) + ' &'], timeout=3)
+        self.assertEqual((record['exitCode'], record['output']), (0, 'late output\n'))
+
+    def test_closed_output_pipe_does_not_end_the_process_deadline(self):
+        record = self.capture(['exec 1>&- 2>&-; sleep 10'], timeout=0.2)
+        self.assertEqual(record['exitCode'], 124)
+        self.assertIn('timed out after 0.2s', record['output'])
+
+    def test_unrepresentable_cwd_is_refused_before_running(self):
+        bad = self.root / 'back\\slash'
+        bad.mkdir()
+        (self.root / 'bad-alias').symlink_to(bad)
+        for cwd in ('back\\slash', bad, 'bad-alias'):
+            with self.subTest(cwd=str(cwd)):
+                result = self.capture([f'touch {self.marker}'], '--cwd', cwd, ok=False)
+                self.assertIn("cwd must be a nonempty target-relative or absolute directory", result.stderr)
+                self.assertFalse(self.marker.exists())
+        record = self.capture(['pwd'], '--cwd', 'apps/web')
+        validate_evidence(self.root, [record])
+        self.assertEqual(record['cwd'], 'apps/web')
 
     def test_long_output_keeps_head_and_tail_with_an_exact_omission_marker(self):
         program = "import sys; sys.stdout.write('H' * 6000 + 'm' * 11000 + 'T' * 3000)"

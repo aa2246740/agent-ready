@@ -15,20 +15,20 @@ from .scoring import score_report, status
 LOCAL_ADAPTER_HEADING = "## Local adapter"
 
 _LOCAL_ADAPTER_FILES = """\
-Files: keep schemaVersion, rubricVersion and repository from the template. Fill apps, all 84 report[id] = {numerator, denominator, rationale} and evidence[id] = [records], at least one record per criterion (failed and skipped too). Replace every UNASSESSED numerator (it is no failure or skip).
-Denominators: the template has null for application criteria and 1 for repository criteria. `report` fills null with N = len(apps); a non-null value that is wrong is an error. A skipped criterion keeps its denominator. There is no per-application N/A: numerator = passing apps out of N; null skips the whole criterion.
-Evidence (never executed by the validator):
+Files: keep template schemaVersion, rubricVersion and repository. Fill apps, all 84 report[id] = {numerator, denominator, rationale} and evidence[id] = [records], at least one record per criterion (failed and skipped too). Replace every UNASSESSED numerator (neither failure nor skip).
+Denominators: template null for application criteria, 1 for repository criteria. `report` fills null with N = len(apps); a non-null value that is wrong is an error. A skipped criterion keeps its denominator. There is no per-application N/A: numerator = passing apps out of N; null skips the whole criterion.
+Evidence (commands never executed):
   {"kind":"file","path":"repo/relative/path","line":1,"note":"what it shows"}
   {"kind":"command","command":"exact shell text","cwd":"...","exitCode":0,"output":"actual excerpt","timeoutSeconds":30}
-`output` is a relevant excerpt of the real output. For commands run from a monorepo root add "application": "<app dir>".
-timeoutSeconds = the limit your execution tool really enforced for the command, default included (the criteria's "Execute timeout field"). Optional helper for a tool without one: `capture --target <target> [--cwd <dir>] --timeout <s> [--append-to <task-dir>/evaluation.json --criterion <id> [--application <app>]] -- <command>` runs it in the target (default cwd: root; writes nothing there) and prints/appends a true record (real cwd and exit code, 124 = timed out; trimmed output); the validator never uses it.
+`output`: relevant real output excerpt. Monorepo-root commands add "application": "<app dir>".
+timeoutSeconds = your execution tool's enforced limit, including defaults (the criteria's "Execute timeout field"). Without a tool limit use: `capture --target <target> [--cwd <dir>] --timeout <s> [--append-to <task-dir>/evaluation.json --criterion <id> [--application <app>]] -- <command>` runs in target (cwd: root; no target writes), prints/appends real cwd, exit code (124 = timeout) and trimmed output; never used by the validator.
 cwd is the directory the command really ran in: target-relative ('.' = target root) or absolute. If your shell starts outside the target, record that absolute start directory and keep `cd /abs/target && ...` in `command`. Keep the real exit status; never invent a directory or drop the cd.
 Hygiene: target is read-only; set PYTHONDONTWRITEBYTECODE=1 (pytest: -p no:cacheprovider) and send build output outside it (e.g. CARGO_TARGET_DIR=<external dir>); fixtures: mktemp -d under the task directory; never record tokens or env dumps. `gh --json` may be ANSI-coloured: use --jq or NO_COLOR=1 CLICOLOR_FORCE=0. Quote globs; avoid shell-isms. interactive_qa_runnable must run the TARGET's own entry point, not this CLI.
-unit_tests_runnable local checks (ONLY for that criterion's positive evidence; other criteria keep their native commands, pipes included): exitCode 0, timeoutSeconds > 0, output with the runner's own listing/collection/result lines; one direct command inside the target, no pipe, `2>&1`, redirection, `;`, backticks, `$(...)`, head, tail, tee or timeout (leading `cd <dir> &&`, `env VAR=value` and wrappers such as `uv run`/`npx --no-install` are fine; PYTHONPATH must stay inside the target). Python: one test file with --collect-only. TS/JS: list mode. Java: run the selected test. Go, Rust, .NET, ctest and others: bounded execution OR a list mode that lists a test (`cargo test -p x --lib -- --list`, `go test -list . ./pkg`, `ctest -N`). Compile-only, help, dry-run and zero tests fail.
+unit_tests_runnable local checks (ONLY for that criterion's positive evidence; other criteria keep their native commands, pipes included): exitCode 0, timeoutSeconds > 0, output with the runner's own listing/collection/result lines; one direct in-target command, no pipe, `2>&1`, redirection, `;`, backticks, `$(...)`, head, tail, tee or timeout (leading `cd <dir> &&`, `env VAR=value` and wrappers such as `uv run`/`npx --no-install` are fine; PYTHONPATH must stay inside the target). Python: one test file with --collect-only. TS/JS: list mode. Java: run the selected test. Go, Rust, .NET, ctest and others: bounded execution OR a list mode that lists a test (`cargo test -p x --lib -- --list`, `go test -list . ./pkg`, `ctest -N`). Compile-only, help, dry-run and zero tests fail.
 """
 
 _LOCAL_ADAPTER_REPORT = """\
-Report: `report <target> --input <task-dir>/evaluation.json --state-dir <state-dir>` (same CLI and external --state-dir as prepare). It lists ALL problems at once (criterion, evidence index, field); fix them all and re-run. It computes the Phase 5 score and stores JSON and Markdown outside the target (no dashboard URL, no Level 6), printing a short summary (--json: full). If the tree changes, prepare again.
+Report: `report <target> --input <task-dir>/evaluation.json --state-dir <state-dir>` (same CLI/state as prepare). It lists ALL problems at once (criterion, evidence index, field); fix them all and re-run. Scores Phase 5; stores JSON/Markdown outside the target (no dashboard URL, no Level 6), printing a summary (--json: {report, markdown, summary} receipt; evaluation with evidence at receipt.report). If the tree changes, prepare again.
 actionItems (optional): 2–3 high-impact, specific, achievable steps {"criterionId":"exact_failed_id","action":"concrete change","reason":"why, per recorded evidence"}, only for failing criteria (partial application failures included), never passing or skipped ones. Fewer than two failures: only that many; none: leave empty.
 """
 
@@ -218,7 +218,8 @@ def fix_prompt(repository: dict, previous: dict, *, signals: list[str] | None = 
 
 def _previous_evidence_pointer(records: list) -> str:
     """One line instead of the old evidence: it is stored in the report and must be re-checked anyway."""
-    files = [f"{item['path']}:{item['line']}" for item in records if isinstance(item, dict) and item.get("kind") == "file" and "path" in item]
+    files = [str(item['path']) + (f":{item['line']}" if "line" in item else "")
+             for item in records if isinstance(item, dict) and item.get("kind") == "file" and "path" in item]
     commands = sum(isinstance(item, dict) and item.get("kind") == "command" for item in records)
     cited = ", ".join(dict.fromkeys(files[:6]))
     return f"Previous evidence: {len(files)} file, {commands} command" + (f"; cited {cited}" if cited else "") + "."
